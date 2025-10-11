@@ -82,6 +82,7 @@ async def extract_fields_with_vision(
     Rules:
     No markdown, no extra text, no explanations — output raw JSON only.
     Identification: Use title, set number, publisher, rarity, holo style, or visible symbols to identify.
+    For cards: Put card type in Title. Like Pokemon xxxx, MTG Spiderman xxxx, Star Wars xxxx, Yu-Gi-Oh! xxxx
     Bullets: Always include 2–3 short **sales-oriented** points (like marketing blurbs).
       Example: instead of "230 HP" say "High 230 HP — tough to knock out".
       For cards: each ≤45 characters.

@@ -1,4 +1,6 @@
-# Python cache / build
+# ========================
+# 🐍 Python cache / build
+# ========================
 __pycache__/
 *.py[cod]
 *.pyo
@@ -8,28 +10,54 @@ __pycache__/
 dist/
 build/
 
-# Virtual environment
+# ========================
+# 🧰 Virtual environments
+# ========================
 .venv/
 env/
 venv/
 
-# Environment variables
+# ========================
+# 🔐 Environment variables
+# ========================
 .env
 *.env
 
-# Logs
-logs/
+# ========================
+# 🧾 Logs & runtime files
+# ========================
+# Ignore all JSON temp data and backups
+logs/*.json
+logs/temp_*
+logs/success_*
+logs/*.bak
+logs/*.old
+*.bak
+
+# Keep only production Sandpiper logs
+!logs/sandpiper_*.log
+!logs/sandpiper.log
+
+# Ignore other general logs
 *.log
 
-# IDE / Editor
+# ========================
+# 💻 IDE / Editor settings
+# ========================
 .vscode/
 .idea/
 *.swp
 *.swo
 
-# OS-specific
+# ========================
+# 💾 OS-specific files
+# ========================
 .DS_Store
 Thumbs.db
 
-# Misc
-*.bak
+# ========================
+# 📦 Miscellaneous
+# ========================
+# Backup or temp files
+*.tmp
+*.old
