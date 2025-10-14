@@ -1,94 +1,78 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <meta charset="utf-8">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Review Item</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=2.0">
   <style>
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      margin: 25px;
-      background: #f5f7fa;
-      font-size: 20px; /* larger base text */
+      font-family: system-ui, sans-serif;
+      background: #fafafa;
+      color: #333;
+      padding: 2em;
+      max-width: 600px;
+      margin: auto;
+    }
+    h1 {
+      color: #1a73e8;
+      text-align: center;
     }
     form {
-      background: white;
-      padding: 25px;
-      border-radius: 12px;
-      max-width: 700px;
-      margin: 0 auto;
-      box-shadow: 0 3px 10px rgba(0,0,0,0.15);
+      display: flex;
+      flex-direction: column;
+      gap: 0.75em;
+      margin-top: 1.5em;
     }
     label {
-      display:block;
-      margin-top:15px;
-      font-weight:bold;
-      color:#333;
+      font-weight: 600;
+      margin-bottom: 0.2em;
     }
-    input[type=text] {
-      width:100%;
-      padding:12px;
-      margin-top:6px;
-      font-size:20px;
-      border:1px solid #bbb;
-      border-radius:8px;
-      box-sizing:border-box;
+    input[type="text"],
+    textarea {
+      padding: 0.5em;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 1em;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    textarea {
+      min-height: 4em;
+      resize: vertical;
     }
     button {
-      margin-top:25px;
-      padding:14px 28px;
-      background:#007bff;
-      color:white;
-      border:none;
-      border-radius:8px;
-      cursor:pointer;
-      font-size:20px;
-      width:100%;
+      background: #1a73e8;
+      color: white;
+      border: none;
+      padding: 0.8em;
+      border-radius: 0.5em;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 1em;
     }
-    button:hover { background:#0056b3; }
-    h2 { text-align:center; color:#333; }
+    button:hover {
+      background: #0f5dc1;
+    }
   </style>
 </head>
 <body>
-  <h2>Review and Approve Item</h2>
+  <h1>Review {{ type_.capitalize() }}</h1>
   <form action="/approve/{{ session_id }}" method="post">
-    {% if type_ == "comic" %}
-      <label>Title & Issue</label>
-      <input type="text" name="Title & Issue" value="{{ data.get('Title & Issue', '') }}">
+    {% for key, value in data.items() %}
+      <label for="{{ key }}">{{ key }}</label>
+      {% if key == "Description" or key == "AI Notes" %}
+        <textarea id="{{ key }}" name="{{ key }}">{{ value }}</textarea>
+      {% else %}
+        <input type="text" id="{{ key }}" name="{{ key }}" value="{{ value }}">
+      {% endif %}
+    {% endfor %}
 
-      <label>Bullet 1</label>
-      <input type="text" name="Bullet 1" value="{{ data.get('Bullet 1', '') }}">
-
-      <label>Bullet 2</label>
-      <input type="text" name="Bullet 2" value="{{ data.get('Bullet 2', '') }}">
-
-      <label>Bullet 3</label>
-      <input type="text" name="Bullet 3" value="{{ data.get('Bullet 3', '') }}">
-
-      <label>Publisher</label>
-      <input type="text" name="Publisher" value="{{ data.get('Publisher', '') }}">
-
-      <label>Price</label>
-      <input type="text" name="Price" value="{{ data.get('Price', '') }}" autofocus>
-
-    {% else %}
-      <label>Title</label>
-      <input type="text" name="Title" value="{{ data.get('Title', '') }}">
-
-      <label>Bullet 1</label>
-      <input type="text" name="Bullet 1" value="{{ data.get('Bullet 1', '') }}">
-
-      <label>Bullet 2</label>
-      <input type="text" name="Bullet 2" value="{{ data.get('Bullet 2', '') }}">
-
-      <label>Price Source</label>
-      <input type="text" name="Price Source" value="{{ data.get('Price Source', '') }}">
-
-      <label>Final Price</label>
-      <input type="text" name="Final Price" value="{{ data.get('Final Price', '') }}" autofocus>
+    {% if not data.get("Inventory #") %}
+      <label for="Inventory #">Inventory #</label>
+      <input type="text" id="Inventory #" name="Inventory #" placeholder="Auto-assigned on save">
     {% endif %}
 
-    <button type="submit">Approve</button>
+    <button type="submit">Approve & Save</button>
   </form>
 </body>
 </html>

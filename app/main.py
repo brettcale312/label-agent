@@ -3,82 +3,50 @@ import io
 import json
 import uuid
 import datetime
+
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from PIL import Image
 
+# Load env vars early
+load_dotenv()
+
+# Local imports
 from .vision import extract_fields_with_vision
 from .pricing import apply_pricing_rules
 from .sheets import append_row, get_next_inventory_number
 from .sandpiper import create_item_and_barcode
 from .models import IngestResponse
 
-# === Load Environment ===
-load_dotenv()
+app = FastAPI(title="Label Agent Starter", version="0.4.3")
 
-# === App Setup ===
 templates = Jinja2Templates(directory="templates")
-app = FastAPI(title="Label Agent Starter", version="0.5.3")
 
-# === Logging / Directory Setup ===
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
+SANDPIPER_LOG = os.path.join(LOG_DIR, "sandpiper.log")
 
-# === Environment Settings ===
 DEBUG_LOGS = os.getenv("DEBUG_LOGS", "false").lower() == "true"
-LOCAL_IP = os.getenv("LOCAL_IP", "10.0.0.66")
 
-# === Console Banner ===
-mode = "DEBUG" if DEBUG_LOGS else "PRODUCTION"
-print(f"\n🚀 Label Agent starting in {mode} mode — logs at /{LOG_DIR}/\n")
 
-# === Rotate Old Logs (older than 7 days) ===
-def _cleanup_old_logs():
-    cutoff = datetime.datetime.now() - datetime.timedelta(days=7)
-    for fname in os.listdir(LOG_DIR):
-        fpath = os.path.join(LOG_DIR, fname)
-        if not os.path.isfile(fpath):
-            continue
-        try:
-            mtime = datetime.datetime.fromtimestamp(os.path.getmtime(fpath))
-            if mtime < cutoff:
-                os.remove(fpath)
-        except Exception:
-            pass
-
-_cleanup_old_logs()
-
-# === Daily Log Writer ===
 def log_event(level: str, data: dict):
-    """Append timestamped Sandpiper actions to daily log file."""
+    """Append timestamped Sandpiper actions to a single log file."""
     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    day = datetime.datetime.now().strftime("%Y-%m-%d")
-    log_path = os.path.join(LOG_DIR, f"sandpiper_{day}.log")
-
     entry = f"[{ts}] {level.upper()} → {json.dumps(data, ensure_ascii=False)}\n"
-    with open(log_path, "a", encoding="utf-8") as f:
+    with open(SANDPIPER_LOG, "a", encoding="utf-8") as f:
         f.write(entry)
-    if DEBUG_LOGS:
-        print(entry.strip())  # show in console only when debugging
+    print(entry.strip())
 
 
-# === Health Endpoint ===
-@app.get("/health", response_class=JSONResponse)
-async def health_check():
-    return {
-        "status": "ok",
-        "mode": "debug" if DEBUG_LOGS else "production",
-        "timestamp": datetime.datetime.now().isoformat(),
-    }
-
-
-# === /ingest ===
+# ------------------------------------------------------------
+# INGEST
+# ------------------------------------------------------------
 @app.post("/ingest", response_model=IngestResponse)
 async def ingest(image: UploadFile, type: str = Form(...)):
-    if type not in ("card", "comic"):
-        raise HTTPException(status_code=400, detail="type must be 'card' or 'comic'")
+    if type not in ("card", "comic", "record", "anything"):
+        raise HTTPException(status_code=400, detail="type must be one of: card, comic, record, anything")
 
     img_bytes = await image.read()
     try:
@@ -88,28 +56,34 @@ async def ingest(image: UploadFile, type: str = Form(...)):
 
     fields = await extract_fields_with_vision(img, type)
     fields = await apply_pricing_rules(type, fields)
-    session_id = str(uuid.uuid4())
 
-    # ✅ Always save temp file so review page works (even in production)
-    temp_path = f"{LOG_DIR}/temp_{session_id}.json"
+    # Get Inventory Number early for review
+    inv_num = await get_next_inventory_number(type)
+    fields["Inventory #"] = inv_num
+
+    # Save temp JSON for review
+    session_id = str(uuid.uuid4())
+    temp_path = f"logs/temp_{session_id}.json"
     with open(temp_path, "w", encoding="utf-8") as f:
         json.dump({"type": type, "fields": fields}, f, indent=2)
 
-    review_url = f"http://{LOCAL_IP}:8080/review/{session_id}"
+    review_url = f"http://{os.getenv('LOCAL_IP', '10.0.0.66')}:8080/review/{session_id}"
     return JSONResponse({"ok": True, "review_url": review_url})
 
 
-# === /review ===
+# ------------------------------------------------------------
+# REVIEW PAGE
+# ------------------------------------------------------------
 @app.get("/review/{session_id}", response_class=HTMLResponse)
 async def review_page(request: Request, session_id: str):
-    path = f"{LOG_DIR}/temp_{session_id}.json"
+    path = f"logs/temp_{session_id}.json"
     if not os.path.exists(path):
         return HTMLResponse("<h3>Session not found.</h3>", status_code=404)
 
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
+
     type_ = data.get("type")
-    price_key = "Price" if type_ == "comic" else "Final Price"
 
     return templates.TemplateResponse(
         "review.html",
@@ -117,86 +91,92 @@ async def review_page(request: Request, session_id: str):
             "request": request,
             "session_id": session_id,
             "data": data["fields"],
-            "price_key": price_key,
             "type_": type_,
         },
     )
 
 
-# === /approve ===
+# ------------------------------------------------------------
+# APPROVE ITEM
+# ------------------------------------------------------------
 @app.post("/approve/{session_id}", response_class=HTMLResponse)
 async def approve_item(request: Request, session_id: str):
     form = await request.form()
-    path = f"{LOG_DIR}/temp_{session_id}.json"
+    path = f"logs/temp_{session_id}.json"
+    if not os.path.exists(path):
+        return HTMLResponse("<h3>Session expired. Please rescan.</h3>", status_code=404)
 
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        type_ = data.get("type")
-    else:
-        type_ = "card"
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
 
+    type_ = data.get("type")
     fields = dict(form)
 
-    # Normalize price formatting
-    price_key = "Price" if type_ == "comic" else "Final Price"
-    val = fields.get(price_key, "").strip()
+    # --- Normalize price formatting ---
+    val = fields.get("Price", "").strip()
     if val and not val.startswith("$"):
         try:
             num = float(val)
-            fields[price_key] = f"${num:.2f}"
+            fields["Price"] = f"${num:.2f}"
         except ValueError:
-            fields[price_key] = f"${val}"
+            fields["Price"] = f"${val}"
 
-    # Generate inventory number
-    inv_num = await get_next_inventory_number(type_)
-    fields["Inventory #"] = inv_num
+    # --- Inventory Number ---
+    if not fields.get("Inventory #"):
+        fields["Inventory #"] = data["fields"].get("Inventory #", "TEMP-0000")
 
-    # Create Sandpiper item and barcode
+    # --- Create in Sandpiper ---
     try:
-        price_val = fields.get(price_key, "$0").replace("$", "")
+        price_val = fields.get("Price", "$0").replace("$", "")
         price_dollars = float(price_val) if price_val else 0.0
         description = fields.get("Title", fields.get("Title & Issue", "Untitled Item"))
 
-        log_event("request", {"inv_num": inv_num, "desc": description, "price": price_dollars})
-        barcode = await create_item_and_barcode(inv_num, description, price_dollars)
+        log_event("request", {"inv_num": fields["Inventory #"], "desc": description, "price": price_dollars})
+        barcode = await create_item_and_barcode(fields["Inventory #"], description, price_dollars)
         log_event("response", {"barcode": barcode})
-
     except Exception as e:
         barcode = "ERROR"
         log_event("error", {"error": str(e)})
 
     fields["Barcode"] = barcode
+
     await append_row(type_, fields)
 
-    # ✅ Only save success JSON when in debug mode
     if DEBUG_LOGS:
-        success_path = f"{LOG_DIR}/success_{session_id}.json"
-        with open(success_path, "w", encoding="utf-8") as f:
+        temp_success_path = f"logs/success_{session_id}.json"
+        with open(temp_success_path, "w", encoding="utf-8") as f:
             json.dump({"fields": fields, "type": type_}, f, indent=2)
 
     return RedirectResponse(url=f"/success/{session_id}", status_code=303)
 
 
-# === /success ===
+# ------------------------------------------------------------
+# SUCCESS PAGE
+# ------------------------------------------------------------
 @app.get("/success/{session_id}", response_class=HTMLResponse)
 async def success_page(request: Request, session_id: str):
-    if DEBUG_LOGS:
-        path = f"{LOG_DIR}/success_{session_id}.json"
-        if not os.path.exists(path):
-            return HTMLResponse("<h3>Success data not found.</h3>", status_code=404)
+    path = f"logs/success_{session_id}.json"
+    fields = {}
+    type_ = "anything"
+
+    if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         fields = data["fields"]
         type_ = data["type"]
-    else:
-        fields = {}
-        type_ = "card"
 
-    price_key = "Price" if type_ == "comic" else "Final Price"
     card_shortcut = os.getenv("CARD_SHORTCUT", "Scan Card For Label")
     comic_shortcut = os.getenv("COMIC_SHORTCUT", "Scan Comic For Label")
-    shortcut_name = card_shortcut if type_ == "card" else comic_shortcut
+    record_shortcut = os.getenv("RECORD_SHORTCUT", "Scan Record For Label")
+    anything_shortcut = os.getenv("ANYTHING_SHORTCUT", "Scan Anything For Label")
+
+    shortcut_name = {
+        "card": card_shortcut,
+        "comic": comic_shortcut,
+        "record": record_shortcut,
+        "anything": anything_shortcut,
+    }.get(type_, anything_shortcut)
+
     shortcut_url = f"shortcuts://run-shortcut?name={shortcut_name}"
 
     return templates.TemplateResponse(
@@ -205,7 +185,6 @@ async def success_page(request: Request, session_id: str):
             "request": request,
             "barcode": fields.get("Barcode", ""),
             "data": fields,
-            "price_key": price_key,
             "type": type_,
             "shortcut_url": shortcut_url,
         },

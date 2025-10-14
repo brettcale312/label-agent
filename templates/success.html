@@ -35,24 +35,24 @@
   </style>
 </head>
 <body>
-  <h1>✅ Item Scanned</h1>
-  <p>Your item data has been captured successfully.</p>
+  <h1>✅ {{ type|capitalize }} Saved</h1>
+  <p>Your {{ type }} data has been captured successfully.</p>
 
-  <p>Launching your shortcut…</p>
+  <p>Launching your {{ type }} shortcut…</p>
   <a id="fallback" class="button" href="/">Return Home</a>
 
   <script>
     // This URL is passed directly from FastAPI
     const shortcutURL = "{{ shortcut_url }}";
 
-    // Avoid launching twice if page reloads or redirect loops
+    // Prevent duplicate launches if page reloads
     if (!sessionStorage.getItem("shortcut_launched")) {
       sessionStorage.setItem("shortcut_launched", "1");
       setTimeout(() => {
         window.location.href = shortcutURL;
       }, 800);
     } else {
-      // Reset flag after a few seconds so next scan can work
+      // Reset after a few seconds so next scan can trigger again
       setTimeout(() => sessionStorage.removeItem("shortcut_launched"), 5000);
     }
   </script>

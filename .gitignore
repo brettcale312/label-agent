@@ -2,6 +2,7 @@
 # 🐍 Python cache / build
 # ========================
 __pycache__/
+*.pyc
 *.py[cod]
 *.pyo
 *.so
@@ -33,6 +34,8 @@ logs/success_*
 logs/*.bak
 logs/*.old
 *.bak
+/logs/
+*.log
 
 # Keep only production Sandpiper logs
 !logs/sandpiper_*.log
