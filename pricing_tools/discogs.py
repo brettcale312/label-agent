@@ -51,7 +51,7 @@ async def _fetch_json(session: aiohttp.ClientSession, url: str, params: dict = N
     return {}
 
 
-async def get_discogs_price(query: str, limit: int = 10) -> dict:
+async def _async_discogs_lookup(query: str, limit: int = 10) -> dict:
     """
     Search Discogs for a record/CD/cassette and return median or lowest marketplace price.
     Iterates through multiple editions and returns the one with the most listings.
@@ -85,14 +85,13 @@ async def get_discogs_price(query: str, limit: int = 10) -> dict:
             if not stats:
                 continue
 
-            # --- Safely coerce num_for_sale ---
-            num_for_sale = stats.get("num_for_sale")
+            # Safely coerce num_for_sale
             try:
-                num_for_sale = int(num_for_sale) if num_for_sale is not None else 0
+                num_for_sale = int(stats.get("num_for_sale") or 0)
             except (TypeError, ValueError):
                 num_for_sale = 0
 
-            # --- Safely parse lowest_price (can be dict, float, or None) ---
+            # Parse lowest/median prices
             lowest_price = None
             lp_data = stats.get("lowest_price")
             if isinstance(lp_data, dict):
@@ -101,25 +100,20 @@ async def get_discogs_price(query: str, limit: int = 10) -> dict:
                 lowest_price = lp_data
 
             median_price = None
-
-            # --- Handle legacy "price" structures ---
             if "price" in stats and isinstance(stats["price"], dict):
-                median_price = stats["price"].get("median")
+                median_price = stats["price"].get("median") or stats["price"].get("median_price")
                 if not lowest_price and stats["price"].get("lowest"):
                     lowest_price = stats["price"]["lowest"]
 
-            # --- Skip blocked or empty entries ---
             if stats.get("blocked_from_sale"):
                 continue
 
-            # --- Optional DEBUG output ---
             if DEBUG_LOGS:
                 logger.info(
                     f"Candidate: {release.get('title')} — "
                     f"{num_for_sale} for sale, lowest: {lowest_price}, median: {median_price}"
                 )
 
-            # --- Choose best release by number for sale ---
             if num_for_sale > 0 and (median_price or lowest_price):
                 if num_for_sale > best_num_for_sale:
                     artist_data = release.get("artist") or release.get("label", "")
@@ -145,10 +139,24 @@ async def get_discogs_price(query: str, limit: int = 10) -> dict:
         return best_result
 
 
+def get_discogs_price(title: str, artist: str = None):
+    """
+    Synchronous wrapper for pricing_model.py
+    Runs the async Discogs lookup and returns a numeric price (float or None).
+    """
+    try:
+        query = f"{title} {artist or ''}".strip()
+        result = asyncio.run(_async_discogs_lookup(query, limit=10))
+        if not result:
+            return None
+        # Prefer median price if available, else lowest
+        return result.get("median_price") or result.get("lowest_price")
+    except Exception as e:
+        logger.error(f"[Discogs] Error in wrapper: {e}")
+        return None
+
+
 # --- Local Test ---
 if __name__ == "__main__":
-    async def test():
-        result = await get_discogs_price("Pink Floyd Dark Side of the Moon", limit=10)
-        print(result)
-
-    asyncio.run(test())
+    price = get_discogs_price("Taylor Swift Midnights Vinyl")
+    print(f"Discogs price: {price}")

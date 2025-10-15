@@ -15,6 +15,7 @@ from statistics import median, mean
 from dotenv import load_dotenv
 from ebay_utils.auth import get_ebay_access_token
 from utils.logger import get_logger
+import json
 
 # Initialize unified logger
 logger = get_logger("ebay")
@@ -46,35 +47,44 @@ async def get_ebay_active_price(query: str = None, upc: str = None, limit: int =
     params = {
         "q": q,
         "limit": str(limit),
-        "filter": "buyingOptions:{FIXED_PRICE}",
-        "fieldgroups": "ASPECT_REFINEMENTS",
+        "filter": "buyingOptions:FIXED_PRICE",
+        # removed fieldgroups to prevent empty results
     }
 
     headers = {
         "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
         "Authorization": f"Bearer {EBAY_TOKEN}",
-        "Content-Type": "application/json",
+        "Accept": "application/json",
         "User-Agent": "pricing-agent/1.0",
     }
+
+    logger.info(f"[eBay] GET {BROWSE_API_URL}  params={params}")
 
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(BROWSE_API_URL, params=params, headers=headers, timeout=20) as resp:
+                text = await resp.text()
                 if resp.status != 200:
-                    text = await resp.text()
                     msg = f"HTTP {resp.status}: {text[:400]}"
                     logger.warning(f"[eBay] {msg}")
                     if DEBUG_LOGS:
                         print(msg)
                     return {}
 
-                data = await resp.json()
+                data = {}
+                try:
+                    data = json.loads(text)
+                except Exception:
+                    logger.error("Failed to parse eBay JSON response")
+                    if DEBUG_LOGS:
+                        print("Response snippet:", text[:500])
+                    return {}
 
         items = data.get("itemSummaries", [])
         if not items:
             logger.info(f"No items found for query '{q}'")
             if DEBUG_LOGS:
-                print(f"No items found for '{q}'")
+                print("🔍 Raw eBay response snippet:", json.dumps(data, indent=2)[:800])
             return {}
 
         prices = []
@@ -133,28 +143,35 @@ async def get_ebay_listings(query: str = None, upc: str = None, limit: int = 10)
     params = {
         "q": q,
         "limit": str(limit),
-        "filter": "buyingOptions:{FIXED_PRICE}",
+        "filter": "buyingOptions:FIXED_PRICE",
     }
 
     headers = {
         "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
         "Authorization": f"Bearer {EBAY_TOKEN}",
-        "Content-Type": "application/json",
+        "Accept": "application/json",
         "User-Agent": "pricing-agent/1.0",
     }
 
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(BROWSE_API_URL, params=params, headers=headers, timeout=20) as resp:
+                text = await resp.text()
                 if resp.status != 200:
-                    text = await resp.text()
                     msg = f"HTTP {resp.status}: {text[:400]}"
                     logger.warning(f"[eBay] {msg}")
                     if DEBUG_LOGS:
                         print(msg)
                     return []
 
-                data = await resp.json()
+                data = {}
+                try:
+                    data = json.loads(text)
+                except Exception:
+                    logger.error("Failed to parse eBay JSON response")
+                    if DEBUG_LOGS:
+                        print("Response snippet:", text[:500])
+                    return []
 
         items = data.get("itemSummaries", [])
         results = []
@@ -183,18 +200,25 @@ async def get_ebay_listings(query: str = None, upc: str = None, limit: int = 10)
         return []
 
 
+# === Synchronous wrapper for pricing_model ===
+def get_ebay_price(title: str, category: str = None):
+    """
+    Synchronous wrapper used by pricing_model.py
+    Runs the async eBay Browse API and returns a numeric price.
+    Prefers median price if available.
+    """
+    try:
+        query = f"{title} {category or ''}".strip()
+        result = asyncio.run(get_ebay_active_price(query=query, limit=20))
+        if not result:
+            return None
+        return result.get("median_price") or result.get("average_price")
+    except Exception as e:
+        logger.error(f"[eBay] Error in wrapper: {e}")
+        return None
+
+
 # === Local test ===
 if __name__ == "__main__":
-    async def test():
-        print("=== Price Summary ===")
-        result = await get_ebay_active_price(query="Funko Pop Darth Vader")
-        print(result)
-
-        print("\n=== Sample Listings ===")
-        listings = await get_ebay_listings(query="Funko Pop Darth Vader", limit=5)
-        for item in listings:
-            print(f"{item['title']} — {item['price']} {item['currency']} ({item['condition']})")
-            print(item['url'])
-            print()
-
-    asyncio.run(test())
+    price = get_ebay_price("Funko Pop Darth Vader")
+    print(f"eBay price: {price}")
