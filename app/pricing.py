@@ -4,6 +4,10 @@ async def apply_pricing_rules(type_: str, fields: dict) -> dict:
     """
     Apply pricing rules for comics, cards, records, and misc items.
     Ensures all use the unified 'Price' field formatted as '$X.XX'.
+    
+    Note: This function now primarily handles fallback cases and formatting,
+    as the main pricing logic is handled in vision.py using the enhanced
+    pricing_model.py with human-accurate valuation logic.
     """
 
     key = "Price"
@@ -23,7 +27,7 @@ async def apply_pricing_rules(type_: str, fields: dict) -> dict:
             num = float(match.group(1))
 
     if num is not None:
-        # Apply category-based floors
+        # Apply category-based floors (these are now fallback minimums)
         if type_ in ("comic", "record") and num < 4.0:
             num = 4.0
         elif type_ == "card" and num < 1.0:
@@ -31,7 +35,7 @@ async def apply_pricing_rules(type_: str, fields: dict) -> dict:
         elif type_ in ("item", "anything") and num < 3.0:
             num = 3.0
 
-        # Rounding rules
+        # Simple rounding for fallback cases
         if num > 5:
             num = int(num) if num == int(num) else int(num) + 1
         else:
@@ -39,7 +43,7 @@ async def apply_pricing_rules(type_: str, fields: dict) -> dict:
 
         fields[key] = f"${num:.2f}"
     else:
-        # Enforce minimum if no valid number found
+        # Enforce minimum if no valid number found (fallback only)
         if type_ in ("comic", "record"):
             fields[key] = "$4.00"
         elif type_ == "card":

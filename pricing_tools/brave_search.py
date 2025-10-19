@@ -57,7 +57,7 @@ def get_brave_price(query: str, limit: int = 10):
 
         avg_p = round(mean(prices), 2)
         med_p = round(median(prices), 2)
-        logger.info(f"[Brave] Found {len(prices)} prices → median {med_p}, avg {avg_p}")
+        logger.info(f"[Brave] Found {len(prices)} prices -> median {med_p}, avg {avg_p}")
         return med_p
 
     except Exception as e:

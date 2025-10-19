@@ -9,7 +9,10 @@ COMIC_COLUMNS = [
     "Publisher",
     "Price",
     "Inventory #",
-    "Barcode"
+    "Barcode",
+    "Condition",
+    "Base_Price",
+    "AI Notes"
 ]
 
 CARD_COLUMNS = [
@@ -19,7 +22,9 @@ CARD_COLUMNS = [
     "Price Source",
     "Price",
     "Inventory #",
-    "Barcode"
+    "Barcode",
+    "Condition",
+    "AI Notes"
 ]
 
 RECORD_COLUMNS = [
@@ -30,7 +35,9 @@ RECORD_COLUMNS = [
     "Genre",
     "Price",
     "Inventory #",
-    "Barcode"
+    "Barcode",
+    "Condition",
+    "AI Notes"
 ]
 
 ANYTHING_COLUMNS = [

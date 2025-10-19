@@ -37,7 +37,9 @@ def log_event(level: str, data: dict):
     entry = f"[{ts}] {level.upper()} → {json.dumps(data, ensure_ascii=False)}\n"
     with open(SANDPIPER_LOG, "a", encoding="utf-8") as f:
         f.write(entry)
-    print(entry.strip())
+    # Use ASCII-safe arrow for console output to avoid encoding issues
+    console_entry = f"[{ts}] {level.upper()} -> {json.dumps(data, ensure_ascii=False)}"
+    print(console_entry)
 
 
 # ------------------------------------------------------------
@@ -140,7 +142,22 @@ async def approve_item(request: Request, session_id: str):
 
     fields["Barcode"] = barcode
 
-    await append_row(type_, fields)
+    # Ensure fields are in the correct column order for the spreadsheet
+    from .models import row_order
+    ordered_fields = {}
+    column_order = row_order(type_)
+    
+    # Add fields in the correct column order
+    for column in column_order:
+        if column in fields:
+            ordered_fields[column] = fields[column]
+    
+    # Add any extra fields that might not be in the column definition
+    for key, value in fields.items():
+        if key not in ordered_fields:
+            ordered_fields[key] = value
+
+    await append_row(type_, ordered_fields)
 
     if DEBUG_LOGS:
         temp_success_path = f"logs/success_{session_id}.json"
