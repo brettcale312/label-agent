@@ -319,11 +319,18 @@ async def extract_fields_with_vision(
                 
                 # Look for pricing data in tool responses
                 for i, msg in enumerate(messages):
+                    # Handle both message objects and strings
+                    content = None
                     if hasattr(msg, 'content') and isinstance(msg.content, str):
+                        content = msg.content
+                    elif isinstance(msg, str):
+                        content = msg
+                    
+                    if content:
                         try:
-                            if msg.content.startswith('{"source":'):
-                                logger.info(f"Found tool response in message {i}: {msg.content[:100]}...")
-                                data = json.loads(msg.content)
+                            if content.startswith('{"source":'):
+                                logger.info(f"Found tool response in message {i}: {content[:100]}...")
+                                data = json.loads(content)
                                 if data.get("source") in ["ebay_api", "cache"] and data.get("data"):
                                     pricing_result = data["data"]
                                     logger.info(f"Extracted pricing result: {pricing_result}")
@@ -449,11 +456,18 @@ async def extract_fields_with_vision(
                     
                     # Look for pricing data in tool responses
                     for i, msg in enumerate(messages):
+                        # Handle both message objects and strings
+                        content = None
                         if hasattr(msg, 'content') and isinstance(msg.content, str):
+                            content = msg.content
+                        elif isinstance(msg, str):
+                            content = msg
+                        
+                        if content:
                             try:
-                                if msg.content.startswith('{"source":'):
-                                    logger.info(f"Found tool response in message {i}: {msg.content[:100]}...")
-                                    data = json.loads(msg.content)
+                                if content.startswith('{"source":'):
+                                    logger.info(f"Found tool response in message {i}: {content[:100]}...")
+                                    data = json.loads(content)
                                     if data.get("source") in ["ebay_api", "cache"] and data.get("data"):
                                         pricing_result = data["data"]
                                         logger.info(f"Extracted pricing result: {pricing_result}")
