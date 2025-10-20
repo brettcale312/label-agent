@@ -97,15 +97,30 @@ class PricingAgent:
         # Get response from model
         response = model_with_tools.invoke(messages)
         
-        return {
-            "messages": [response],
-            "session_id": state["session_id"],
-            "user_id": state["user_id"],
-            "current_item": state.get("current_item"),
-            "pricing_result": state.get("pricing_result"),
-            "learned_patterns": state.get("learned_patterns", []),
-            "user_preferences": state.get("user_preferences", {})
-        }
+        # If the response doesn't contain tool calls, it means the agent is providing reasoning
+        # If it does contain tool calls, we need to wait for the tools to be executed first
+        if hasattr(response, 'tool_calls') and response.tool_calls:
+            # Agent wants to call tools first
+            return {
+                "messages": [response],
+                "session_id": state["session_id"],
+                "user_id": state["user_id"],
+                "current_item": state.get("current_item"),
+                "pricing_result": state.get("pricing_result"),
+                "learned_patterns": state.get("learned_patterns", []),
+                "user_preferences": state.get("user_preferences", {})
+            }
+        else:
+            # Agent is providing reasoning without tool calls
+            return {
+                "messages": [response],
+                "session_id": state["session_id"],
+                "user_id": state["user_id"],
+                "current_item": state.get("current_item"),
+                "pricing_result": state.get("pricing_result"),
+                "learned_patterns": state.get("learned_patterns", []),
+                "user_preferences": state.get("user_preferences", {})
+            }
     
     def _create_system_message(self, state: PricingAgentState) -> SystemMessage:
         """Create system message with context and instructions."""
@@ -154,17 +169,25 @@ class PricingAgent:
 
 ## Process:
 1. Analyze the item description and identify key details
-2. Search relevant pricing sources (eBay, Discogs, web)
-3. Use your own reasoning to determine appropriate pricing
-4. Consider condition, venue, market trends, and item rarity
-5. Apply your judgment rather than rigid formulas
-6. Consider learned patterns and user preferences
-7. Provide clear reasoning for your pricing decision
-8. Save the result and any new patterns learned
+2. Search relevant pricing sources (eBay, Discogs, web) to get market data
+3. After getting the data, analyze it and provide your own pricing recommendation
+4. Use your own reasoning to determine appropriate pricing
+5. Consider condition, venue, market trends, and item rarity
+6. Apply your judgment rather than rigid formulas
+7. Consider learned patterns and user preferences
+8. Provide clear reasoning for your pricing decision
+9. Save the result and any new patterns learned
 
-## Important: Use Your Own Reasoning
+## Important: After Getting Data, You Must Reason About It
+- When you get eBay/Discogs data, don't just return it
+- Analyze the data and provide your own pricing recommendation
+- Explain why you chose that price based on your analysis
+- Don't use predefined logic or formulas
+
+## CRITICAL: Use Your Own Reasoning - DO NOT Use Predefined Logic
 - After getting market data, analyze it and provide your own pricing recommendation
-- Don't just apply fixed multipliers or formulas
+- DO NOT use any predefined pricing formulas or multipliers
+- DO NOT use "comic pricing logic applied" or similar predefined reasoning
 - Think about what makes this item valuable or common
 - Consider market trends, condition impact, and venue context
 - Use your knowledge of collectibles to make informed decisions
@@ -173,6 +196,11 @@ class PricingAgent:
 
 ## Example Response Format:
 "Based on the eBay data showing a median of $X.XX, I recommend pricing this item at $Y.YY because [your reasoning about condition, rarity, market trends, etc.]"
+
+## What NOT to do:
+- Don't say "comic pricing logic applied"
+- Don't use predefined multipliers
+- Don't just apply formulas without thinking
 
 Always be thorough in your analysis and transparent in your reasoning."""
         
