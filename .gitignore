@@ -64,3 +64,9 @@ Thumbs.db
 # Backup or temp files
 *.tmp
 *.old
+
+# ========================
+# 📁 Project-specific
+# ========================
+# Backup folder (captured once, then ignored)
+backups/
