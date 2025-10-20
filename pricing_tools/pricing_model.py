@@ -186,11 +186,14 @@ def get_best_price(
     # === eBay ===
     ebay_data = _safe_get_ebay_data(title, category, metadata)
     ebay_median = ebay_data.get("median_active_price", 0) if ebay_data else 0
+    ebay_warnings = ebay_data.get("validation_warnings", []) if ebay_data else []
     if ebay_median:
         logger.info(
             f"eBay: median=${ebay_median:.2f}, avg=${ebay_data.get('avg_active_price', 0):.2f}, "
             f"samples={ebay_data.get('sample_count', 0)}"
         )
+        if ebay_warnings:
+            logger.warning(f"eBay validation warnings: {ebay_warnings}")
 
     # === Records: use human-accurate valuation ===
     if discogs_data and is_record_media and (
@@ -252,6 +255,10 @@ def get_best_price(
         reasoning = (
             f"Base eBay median ${ebay_base_price:.2f} -> comic pricing logic applied ({condition})."
         )
+        
+        # Add validation warnings to reasoning
+        if ebay_warnings:
+            reasoning += f" WARNING: {', '.join(ebay_warnings)}"
 
     # === Card pricing ===
     elif "pokemon" in title.lower() or "mtg" in title.lower() or category.lower() in [

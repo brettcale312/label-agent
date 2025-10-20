@@ -149,9 +149,12 @@ async def extract_fields_with_vision(
         
         **CRITICAL - Issue Number Detection:**
         - Look carefully for "NO. X" format (e.g., "NO. 11 JUNE $1.00" = Issue #11)
-        - Distinguish between issue number and cover price
-        - Check small text near the price area
+        - Also check for "#X", "Issue X", "Vol. X", or standalone numbers
+        - Distinguish between issue number and cover price (price usually has $ or cents)
+        - Check small text near the price area, corners, or cover edges
         - Cross-reference with title for validation
+        - If multiple numbers visible, prioritize the one that looks like an issue number
+        - For Disney comics, look for "NO. XXX" format prominently displayed
         
         Highlight first appearances, classic covers, popular artists, or tie-ins to shows/movies.
         Bullets: Always include 3 short **sales-oriented** points (like marketing blurbs).
@@ -343,7 +346,7 @@ async def extract_fields_with_vision(
                     price_result = {
                         "final_price": pricing_result.get("final_price"),
                         "base_price": pricing_result.get("base_price"),
-                        "reasoning": langgraph_result.get("messages", [""])[-1] if langgraph_result.get("messages") else "LangGraph pricing analysis"
+                        "reasoning": pricing_result.get("reasoning", "LangGraph pricing analysis")
                     }
                     logger.info(f"LangGraph pricing successful: ${price_result['final_price']:.2f}")
                 else:
@@ -480,7 +483,7 @@ async def extract_fields_with_vision(
                         price_result = {
                             "final_price": pricing_result.get("final_price"),
                             "base_price": pricing_result.get("base_price"),
-                            "reasoning": langgraph_result.get("messages", [""])[-1] if langgraph_result.get("messages") else "LangGraph pricing analysis",
+                            "reasoning": pricing_result.get("reasoning", "LangGraph pricing analysis"),
                             "sources": {"langgraph": True}
                         }
                         logger.info(f"LangGraph pricing successful: ${price_result['final_price']:.2f}")

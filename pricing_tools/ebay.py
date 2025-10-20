@@ -44,6 +44,17 @@ async def get_ebay_active_price(query: str = None, upc: str = None, limit: int =
         raise
 
     q = query or upc
+    
+    # Enhanced search query to exclude graded/slabbed versions
+    if "comic" in q.lower() or "card" in q.lower():
+        # Exclude common grading terms and slabbed items
+        exclude_terms = ["-graded", "-slabbed", "-cgc", "-psa", "-bgs", "-pgx", "graded", "slabbed", "cgc", "psa", "bgs", "pgx"]
+        enhanced_query = q
+        for term in exclude_terms:
+            if term not in q.lower():
+                enhanced_query += f" -{term}"
+        q = enhanced_query
+    
     params = {
         "q": q,
         "limit": str(limit),
@@ -102,8 +113,19 @@ async def get_ebay_active_price(query: str = None, upc: str = None, limit: int =
                 print(f"No valid prices for '{q}'")
             return {}
 
+        # Price validation - flag unusually high prices
+        validation_warnings = []
         med = round(median(prices), 2)
         avg = round(mean(prices), 2)
+        max_price = max(prices)
+        
+        # Flag if median is unusually high for common items
+        if "comic" in q.lower():
+            if med > 50 and any(common_series in q.lower() for common_series in ["mickey mouse", "disney", "superman", "batman", "spider-man"]):
+                validation_warnings.append(f"High median price (${med}) for common series - may include graded/special variants")
+            if max_price > med * 5:  # Outlier detection
+                validation_warnings.append(f"Price outlier detected: max ${max_price} vs median ${med}")
+        
         title = items[0].get("title", q)
 
         result = {
@@ -112,6 +134,8 @@ async def get_ebay_active_price(query: str = None, upc: str = None, limit: int =
             "sample_count": len(prices),
             "title_match": title,
             "source": "eBay Browse API (Active Listings)",
+            "validation_warnings": validation_warnings,
+            "max_price": max_price
         }
 
         logger.info(f"Retrieved {len(prices)} listings for '{q}' (median: {med}, avg: {avg})")
