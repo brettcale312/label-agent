@@ -155,10 +155,19 @@ class PricingAgent:
 ## Process:
 1. Analyze the item description and identify key details
 2. Search relevant pricing sources (eBay, Discogs, web)
-3. Apply condition multipliers and venue adjustments
-4. Consider learned patterns and user preferences
-5. Provide clear reasoning for your pricing decision
-6. Save the result and any new patterns learned
+3. Use your own reasoning to determine appropriate pricing
+4. Consider condition, venue, market trends, and item rarity
+5. Apply your judgment rather than rigid formulas
+6. Consider learned patterns and user preferences
+7. Provide clear reasoning for your pricing decision
+8. Save the result and any new patterns learned
+
+## Important: Use Your Own Reasoning
+- Don't just apply fixed multipliers or formulas
+- Think about what makes this item valuable or common
+- Consider market trends, condition impact, and venue context
+- Use your knowledge of collectibles to make informed decisions
+- Explain your reasoning clearly so the user understands your logic
 
 Always be thorough in your analysis and transparent in your reasoning."""
         
@@ -191,9 +200,9 @@ Always be thorough in your analysis and transparent in your reasoning."""
         if state.get("pricing_result"):
             return "save"
         
-        # Check if the message indicates completion
+        # Check if the message indicates completion with pricing reasoning
         content = last_message.content.lower()
-        if any(phrase in content for phrase in ["final price", "pricing complete", "save result"]):
+        if any(phrase in content for phrase in ["final price", "pricing complete", "save result", "estimated price", "recommended price"]):
             return "save"
         
         return "end"

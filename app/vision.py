@@ -304,10 +304,12 @@ async def extract_fields_with_vision(
             # Create or get session for this user
             session_id = agent.get_or_create_session(user_id)
             
-            # Use LangGraph agent for intelligent pricing
+            # Use LangGraph agent for intelligent pricing with more context
+            item_description = f"{ordered.get('Title', '')} - {type_} in {condition} condition. Please analyze this item and provide your own pricing reasoning based on market data, condition, and collectible knowledge."
+            
             langgraph_result = agent.price_item(
                 user_id=user_id,
-                item_description=ordered.get("Title", ""),
+                item_description=item_description,
                 item_type=type_,
                 condition=condition,
                 session_id=session_id
