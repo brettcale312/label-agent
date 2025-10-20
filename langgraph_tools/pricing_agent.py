@@ -163,11 +163,16 @@ class PricingAgent:
 8. Save the result and any new patterns learned
 
 ## Important: Use Your Own Reasoning
+- After getting market data, analyze it and provide your own pricing recommendation
 - Don't just apply fixed multipliers or formulas
 - Think about what makes this item valuable or common
 - Consider market trends, condition impact, and venue context
 - Use your knowledge of collectibles to make informed decisions
 - Explain your reasoning clearly so the user understands your logic
+- Always provide a final price recommendation with clear reasoning
+
+## Example Response Format:
+"Based on the eBay data showing a median of $X.XX, I recommend pricing this item at $Y.YY because [your reasoning about condition, rarity, market trends, etc.]"
 
 Always be thorough in your analysis and transparent in your reasoning."""
         
