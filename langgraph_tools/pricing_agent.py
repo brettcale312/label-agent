@@ -82,7 +82,8 @@ class PricingAgent:
         # Get learned patterns for context
         if not state.get("learned_patterns"):
             patterns_result = self.tools[3].invoke({"pattern_type": "series_pricing"})  # get_learned_patterns
-            state["learned_patterns"] = patterns_result
+            user_adjustments = self.tools[3].invoke({"pattern_type": "user_adjustment"})  # get user adjustments
+            state["learned_patterns"] = patterns_result + user_adjustments
         
         # Create system message with context
         system_message = self._create_system_message(state)
@@ -144,6 +145,12 @@ class PricingAgent:
 - get_user_preferences: Get user's pricing preferences
 - save_priced_item: Save the final pricing result
 - get_session_history: View items processed in this session
+
+## Learning from User Adjustments:
+- Pay attention to 'user_adjustment' patterns in learned patterns
+- These show when users adjusted AI prices and by how much
+- Use this data to improve future pricing for similar items
+- Consider user preferences when they consistently adjust prices
 
 ## Process:
 1. Analyze the item description and identify key details

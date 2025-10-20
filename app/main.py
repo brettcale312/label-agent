@@ -175,28 +175,78 @@ async def approve_item(request: Request, session_id: str):
     # --- Save to LangGraph database ---
     if langgraph_session_id:
         try:
-            from database.operations import ItemOps
+            from database.operations import ItemOps, LearnedPatternOps
             
-            # Prepare item data for LangGraph database
-            item_data = {
-                'item_type': type_,
-                'title': fields.get('Title', fields.get('Title & Issue', 'Unknown Item')),
-                'condition': fields.get('Condition', 'unknown'),
-                'base_price': float(fields.get('Base_Price', 0)) if fields.get('Base_Price') else None,
-                'final_price': float(fields.get('Price', '$0').replace('$', '')),
-                'pricing_reasoning': fields.get('AI Notes', ''),
-                'ai_notes': fields.get('AI Notes', ''),
-                'barcode': barcode,
-                'publisher': fields.get('Publisher', ''),
-                'artist': fields.get('Artist', '')
-            }
+            # Get original AI price vs final user-adjusted price
+            original_fields = data.get("fields", {})
+            ai_price_str = original_fields.get("Price", "$0").replace("$", "")
+            final_price_str = fields.get("Price", "$0").replace("$", "")
             
-            db = get_db_session()
             try:
-                item = ItemOps.create_item(db, langgraph_session_id, item_data)
-                log_event("langgraph_save", {"item_id": item.id, "session_id": langgraph_session_id})
-            finally:
-                db.close()
+                ai_price = float(ai_price_str) if ai_price_str else 0
+                final_price = float(final_price_str) if final_price_str else 0
+                
+                # Calculate adjustment ratio
+                if ai_price > 0:
+                    adjustment_ratio = final_price / ai_price
+                    adjustment_made = abs(adjustment_ratio - 1.0) > 0.05  # 5% threshold
+                else:
+                    adjustment_ratio = 1.0
+                    adjustment_made = False
+                
+                # Prepare item data for LangGraph database
+                item_data = {
+                    'item_type': type_,
+                    'title': fields.get('Title', fields.get('Title & Issue', 'Unknown Item')),
+                    'condition': fields.get('Condition', 'unknown'),
+                    'base_price': float(fields.get('Base_Price', 0)) if fields.get('Base_Price') else None,
+                    'final_price': final_price,
+                    'pricing_reasoning': fields.get('AI Notes', ''),
+                    'ai_notes': fields.get('AI Notes', ''),
+                    'barcode': barcode,
+                    'publisher': fields.get('Publisher', ''),
+                    'artist': fields.get('Artist', '')
+                }
+                
+                db = get_db_session()
+                try:
+                    item = ItemOps.create_item(db, langgraph_session_id, item_data)
+                    log_event("langgraph_save", {"item_id": item.id, "session_id": langgraph_session_id})
+                    
+                    # If user made significant adjustment, create learning pattern
+                    if adjustment_made:
+                        title_key = fields.get('Title', fields.get('Title & Issue', 'Unknown Item'))
+                        
+                        # Create pattern for this specific item
+                        pattern_data = {
+                            'ai_price': ai_price,
+                            'user_price': final_price,
+                            'adjustment_ratio': adjustment_ratio,
+                            'reason': f"User adjusted AI price from ${ai_price:.2f} to ${final_price:.2f}",
+                            'condition': fields.get('Condition', 'unknown')
+                        }
+                        
+                        LearnedPatternOps.create_pattern(
+                            db, langgraph_session_id, 
+                            'user_adjustment', 
+                            f"{title_key}_{fields.get('Condition', 'unknown')}",
+                            pattern_data,
+                            confidence_score=0.8,
+                            sample_size=1
+                        )
+                        
+                        log_event("langgraph_learning", {
+                            "item": title_key,
+                            "ai_price": ai_price,
+                            "user_price": final_price,
+                            "adjustment_ratio": adjustment_ratio
+                        })
+                        
+                finally:
+                    db.close()
+                    
+            except ValueError as e:
+                log_event("langgraph_price_parse_error", {"error": str(e)})
                 
         except Exception as e:
             log_event("langgraph_error", {"error": str(e)})
