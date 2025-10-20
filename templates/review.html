@@ -205,8 +205,8 @@ function calculateConditionPricing() {
   // Calculate prices for each condition
   const pricingSummary = [];
   
-  if (itemType === "comic") {
-    // For comics, use the Base_Price field directly
+  if (itemType === "comic" || itemType === "card" || itemType === "record") {
+    // For comics and cards, use the Base_Price field directly
     let basePrice;
     const basePriceField = "{{ data.get('Base_Price', '') }}";
     
@@ -215,11 +215,11 @@ function calculateConditionPricing() {
       if (!isNaN(basePrice) && basePrice > 0) {
         // Using Base_Price field
       } else {
-        basePrice = reverseComicPricing(currentPrice, currentCondition);
+        basePrice = reverseConditionAndVenueMultiplier(currentPrice, currentCondition);
       }
     } else {
       // Fallback: reverse engineering (should rarely be needed now)
-      basePrice = reverseComicPricing(currentPrice, currentCondition);
+      basePrice = reverseConditionAndVenueMultiplier(currentPrice, currentCondition);
     }
     
     // Extract year from title if possible
@@ -228,7 +228,25 @@ function calculateConditionPricing() {
     const year = yearMatch ? parseInt(yearMatch[0]) : null;
     
     conditionList.forEach(condition => {
-      const finalPrice = calculateComicPrice(basePrice, condition, year);
+      let finalPrice;
+      if (itemType === "comic") {
+        finalPrice = calculateComicPrice(basePrice, condition, year);
+      } else {
+        // For cards and records, use standard condition multipliers
+        let adjustedPrice = applyConditionMultiplier(basePrice, condition);
+        
+        // Apply antique store venue multipliers based on BASE price (same logic as backend)
+        if (basePrice < 5) {
+          adjustedPrice = adjustedPrice * 2.5;
+        } else if (basePrice < 10) {
+          adjustedPrice = adjustedPrice * 1.75;
+        } else {
+          adjustedPrice = adjustedPrice * 1.2;
+        }
+        
+        finalPrice = applyAntiqueStoreRounding(adjustedPrice);
+      }
+      
       if (isNaN(finalPrice)) {
         pricingSummary.push(`${condition}: ERROR`);
       } else {

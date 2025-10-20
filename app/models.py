@@ -24,6 +24,7 @@ CARD_COLUMNS = [
     "Inventory #",
     "Barcode",
     "Condition",
+    "Base_Price",
     "AI Notes"
 ]
 
@@ -37,6 +38,7 @@ RECORD_COLUMNS = [
     "Inventory #",
     "Barcode",
     "Condition",
+    "Base_Price",
     "AI Notes"
 ]
 

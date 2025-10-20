@@ -71,7 +71,6 @@ def calculate_comic_price(base_price: float, condition: str, year: int = None) -
     if not year:
         year = 2010
     
-    # === Age-based multiplier logic ===
     if year > 2005:
         if base_price <= 5:
             base_multiplier = 1.75
@@ -85,8 +84,6 @@ def calculate_comic_price(base_price: float, condition: str, year: int = None) -
         base_multiplier = 2.5
     
     adjusted_price = base_price * base_multiplier
-
-    # === Condition scaling ===
     condition_lower = condition.lower()
     if "near mint" in condition_lower:
         adjusted_price *= 1.1
@@ -148,20 +145,20 @@ def calculate_card_price(base_price: float, condition: str, rarity: str = None, 
 
     # --- Step 6: Venue rounding ---
     final_price = round_retail(adjusted_price, venue)
+
     return final_price
 
 
 def apply_condition_multiplier(base: float, condition: str, category: str = None) -> float:
     """
-    Apply condition multipliers:
-      - Full detail for comics and records
-      - Simplified (flat) logic for cards
+    Apply condition multipliers, but only significant for cards.
+    Comics and records use their own logic in their respective pricing functions.
     """
     condition = (condition or "").strip().lower()
     multiplier = 1.0
 
+    # Only apply to cards
     if category and "card" in category.lower():
-        # Card-specific simplified multipliers
         if "heavily played" in condition:
             multiplier = 0.8
         elif "damaged" in condition:
@@ -169,37 +166,8 @@ def apply_condition_multiplier(base: float, condition: str, category: str = None
         else:
             multiplier = 1.0
 
-    elif category and "comic" in category.lower():
-        # Restore detailed comic scaling
-        if "near mint" in condition:
-            multiplier = 1.4
-        elif "very fine" in condition:
-            multiplier = 1.2
-        elif "fine" in condition:
-            multiplier = 1.0
-        elif "very good" in condition:
-            multiplier = 0.8
-        elif "good" in condition:
-            multiplier = 0.7
-        elif "fair" in condition:
-            multiplier = 0.5
-
-    elif category and ("record" in category.lower() or "vinyl" in category.lower()):
-        # Record grading logic
-        if "sealed" in condition or "mint" in condition:
-            multiplier = 1.6
-        elif "vg+" in condition:
-            multiplier = 1.2
-        elif "vg" in condition:
-            multiplier = 1.0
-        elif "good" in condition:
-            multiplier = 0.7
-        elif "fair" in condition:
-            multiplier = 0.5
-
     adjusted = base * multiplier
-    # Reduced logging to avoid spam
-    # logger.info(f"[Condition] {category or 'general'} | {condition} -> x{multiplier} -> {adjusted:.2f}")
+    logger.info(f"[Condition] {category or 'general'} | {condition} → x{multiplier} → {adjusted:.2f}")
     return adjusted
 
 

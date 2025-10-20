@@ -113,9 +113,6 @@ def _safe_get_ebay_data(title: str, category: str = None, metadata: dict = None)
                     query_parts.append(rarity_text)
             if metadata.get("year"):
                 query_parts.append(str(metadata["year"]))
-        elif category:
-            query_parts.append(category)
-
         query = " ".join(query_parts)
 
         search_url = "https://api.ebay.com/buy/browse/v1/item_summary/search"
@@ -173,51 +170,14 @@ def get_best_price(
 
     # === Discogs (records/media only) ===
     discogs_data = {}
-    is_record_media = category.lower() in ["record", "vinyl", "media", "cd", "cassette", "tape"]
-    if is_record_media:
+    if category.lower() in ["record", "vinyl", "media", "cd", "cassette", "tape"]:
         discogs_data = _safe_get_discogs_data(title, artist)
-        if discogs_data:
-            logger.info(
-                f"Discogs: median=${discogs_data.get('median_price', 0)}, "
-                f"lowest=${discogs_data.get('lowest_price', 0)}, "
-                f"for_sale={discogs_data.get('num_for_sale', 0)}"
-            )
 
     # === eBay ===
     ebay_data = _safe_get_ebay_data(title, category, metadata)
     ebay_median = ebay_data.get("median_active_price", 0) if ebay_data else 0
-    if ebay_median:
-        logger.info(
-            f"eBay: median=${ebay_median:.2f}, avg=${ebay_data.get('avg_active_price', 0):.2f}, "
-            f"samples={ebay_data.get('sample_count', 0)}"
-        )
 
-    # === Records: use human-accurate valuation ===
-    if discogs_data and is_record_media and (
-        discogs_data.get("median_price") or discogs_data.get("lowest_price")
-    ):
-        item_meta = {"title": title, "condition": condition, "venue": venue, "category": category}
-        try:
-            valuation_result = estimate_value(discogs_data, ebay_data, item_meta)
-            return {
-                "sources": {
-                    "Discogs": discogs_data.get("median_price", 0),
-                    "eBay": ebay_data.get("median_active_price", 0),
-                },
-                "final_price": valuation_result["estimated_price"],
-                "base_price": ebay_data.get("median_active_price", 0),
-                "reasoning": valuation_result["reasoning"],
-                "method": "human-accurate_valuation",
-            }
-        except Exception as e:
-            logger.error(f"Valuation logic failed: {e}")
-            return {
-                "sources": {"Discogs": discogs_data.get("median_price", 0)},
-                "final_price": discogs_data.get("median_price", 0),
-                "method": "discogs_fallback",
-            }
-
-    # === Web fallback ===
+    # === Web Fallback ===
     sources = {}
     if ebay_median:
         sources["eBay"] = ebay_median
@@ -233,7 +193,6 @@ def get_best_price(
         logger.warning(f"No valid prices found for: {title}")
         return {"sources": {}, "final_price": None, "note": "No prices found", "method": "none"}
 
-    # === Weighted average ===
     weights = {"eBay": 0.75, "WebSearch": 0.25}
     active_weights = {k: weights[k] for k in sources.keys() if k in weights}
     weighted_sum = sum(sources[k] * active_weights[k] for k in active_weights)
@@ -242,23 +201,23 @@ def get_best_price(
     final_price = base_price
     reasoning = ""
 
-    # === Comic pricing ===
-    if category.lower() == "comic":
+    # === Category-specific pricing ===
+    if category.lower() in ["record", "vinyl", "media", "cd", "cassette", "tape"]:
+        # Use advanced Discogs/eBay hybrid valuation
+        item_meta = {"title": title, "condition": condition, "venue": venue, "category": category}
+        valuation_result = estimate_value(discogs_data, ebay_data, item_meta)
+        final_price = valuation_result["estimated_price"]
+        reasoning = valuation_result["reasoning"]
+
+    elif category.lower() == "comic":
         import re
         year_match = re.search(r"\b(19|20)\d{2}\b", title)
         year = int(year_match.group()) if year_match else None
-        ebay_base_price = ebay_median or weighted_avg
-        final_price = calculate_comic_price(ebay_base_price, condition, year)
-        reasoning = (
-            f"Base eBay median ${ebay_base_price:.2f} → comic pricing logic applied ({condition})."
-        )
+        ebay_base = ebay_median or weighted_avg
+        final_price = calculate_comic_price(ebay_base, condition, year)
+        reasoning = f"Base eBay median ${ebay_base:.2f} → comic pricing logic applied ({condition})."
 
-    # === Card pricing ===
-    elif "pokemon" in title.lower() or "mtg" in title.lower() or category.lower() in [
-        "card",
-        "trading_card",
-        "pokemon",
-    ]:
+    elif "pokemon" in title.lower() or "mtg" in title.lower() or category.lower() in ["card", "trading_card", "pokemon"]:
         rarity = metadata.get("rarity") if metadata else None
         year = metadata.get("year") if metadata else None
         final_price = calculate_card_price(base_price, condition, rarity, year, venue)
@@ -272,22 +231,12 @@ def get_best_price(
         else:
             reasoning = "No reliable price data; used adjusted rarity floor."
 
-    # === Everything else ===
     else:
-        adjusted_price = apply_condition_multiplier(weighted_avg, condition)
-        if venue == "antique_store":
-            if weighted_avg < 5:
-                final_price = adjusted_price * 2.5
-            elif weighted_avg < 10:
-                final_price = adjusted_price * 1.75
-            else:
-                final_price = adjusted_price * 1.2
-            final_price = round_retail(final_price, venue)
-        else:
-            final_price = apply_condition_multiplier(weighted_avg, condition)
-        reasoning = f"Weighted average ${weighted_avg:.2f} × venue/condition = ${final_price:.2f}"
+        adjusted_price = apply_condition_multiplier(base_price, condition)
+        final_price = round_retail(adjusted_price, venue)
+        reasoning = f"Base ${base_price:.2f} × condition factor = ${adjusted_price:.2f} → rounded to ${final_price:.2f}."
 
-    # === JSONL debug logging ===
+    # === Debug JSONL Logging ===
     if DEBUG_LOGS:
         try:
             log_file = os.path.join(LOG_DIR, f"pricing_results_{datetime.now():%Y-%m-%d}.jsonl")

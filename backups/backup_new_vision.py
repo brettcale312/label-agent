@@ -54,65 +54,6 @@ def log_usage(resp, source_filename: str):
         )
 
 
-def extract_issue_number(title_and_issue: str) -> str:
-    """Extract issue number from title string."""
-    import re
-    
-    # Look for patterns like "NO. 11", "#11", "Issue 11", etc.
-    patterns = [
-        r'NO\.?\s*(\d+)',  # "NO. 11" or "NO 11"
-        r'#(\d+)',         # "#11"
-        r'Issue\s*(\d+)',  # "Issue 11"
-        r'(\d+)\s*JUNE',   # "11 JUNE" (from cover price area)
-    ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, title_and_issue, re.IGNORECASE)
-        if match:
-            return match.group(1)
-    
-    return ""
-
-
-def validate_comic_price(price: float, title: str, issue: str) -> dict:
-    """Validate comic pricing and flag high-value items for review."""
-    validation = {
-        "is_high_value": False,
-        "warning": None,
-        "confidence": "high"
-    }
-    
-    # Flag high-value items
-    if price > 50:
-        validation["is_high_value"] = True
-        validation["warning"] = f"High value item (${price:.2f}) - verify issue number and condition"
-        validation["confidence"] = "low"
-    
-    # Check for common misidentification patterns
-    if "adventures" in title.lower() and price > 30:
-        validation["warning"] = "Adventures series typically lower value - verify issue number"
-        validation["confidence"] = "medium"
-    
-    # Flag first issues for verification
-    if issue and issue.lower() in ["1", "#1", "no. 1"] and price > 20:
-        validation["warning"] = "First issue detected - verify authenticity and condition"
-        validation["confidence"] = "medium"
-    
-    # Check for suspiciously high prices on common series
-    if any(series in title.lower() for series in ["adventures", "tales", "presents"]) and price > 40:
-        validation["warning"] = f"High price (${price:.2f}) for common series - double-check issue number"
-        validation["confidence"] = "medium"
-    
-    # Flag potential misreads of issue numbers
-    if issue and issue.isdigit():
-        issue_num = int(issue)
-        if issue_num > 50 and price > 25:
-            validation["warning"] = f"High issue number (#{issue}) with high price - verify authenticity"
-            validation["confidence"] = "medium"
-    
-    return validation
-
-
 async def extract_fields_with_vision(
     img: Image.Image, type_: str, source_filename: str = "uploaded_image.jpg"
 ):
@@ -134,23 +75,11 @@ async def extract_fields_with_vision(
         columns = COMIC_COLUMNS
         context = """
         Identification: Use title, issue number, publisher, or visible cover text to identify.
-        
-        **CRITICAL - Issue Number Detection:**
-        - Look carefully for "NO. X" format (e.g., "NO. 11 JUNE $1.00" = Issue #11)
-        - Distinguish between issue number and cover price
-        - Check small text near the price area
-        - Cross-reference with title for validation
-        
         Highlight first appearances, classic covers, popular artists, or tie-ins to shows/movies.
         Bullets: Always include 3 short **sales-oriented** points (like marketing blurbs).
         Condition: Choose from mint, near mint, very fine, fine, very good, good.
         Pricing: Base on eBay/GoCollect/Amazon; round UP.
         Minimum price = $4.00.
-        
-        **Price Validation:**
-        - If price >$50, add note: "High value item - verify issue number and condition"
-        - Include confidence level in AI Notes
-        - Flag for manual review if uncertain
         """
 
     elif type_ == "card":
@@ -218,7 +147,7 @@ async def extract_fields_with_vision(
                     "role": "user",
                     "content": [
                         {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}}
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}}.
                     ],
                 }
             ],
@@ -248,10 +177,9 @@ async def extract_fields_with_vision(
     if type_ == "comic":
         ordered = {col: str(data.get(col, "")) for col in COMIC_COLUMNS}
         if not ordered.get("AI Notes"):
-            ordered["AI Notes"] = "Automatically generated comic analysis and pricing summary."
+            ordered["AI Notes"] = "Automatically generated comic summary."
         if not any(ordered.values()):
             ordered["Title & Issue"] = f"Unrecognized Comic ({source_filename})"
-        
 
     elif type_ == "card":
         ordered = {col: str(data.get(col, "")) for col in CARD_COLUMNS}
@@ -298,25 +226,6 @@ async def extract_fields_with_vision(
         if price_result and price_result.get("base_price"):
             ordered["Base_Price"] = price_result["base_price"]
             logger.info(f"Base_Price set to: {price_result['base_price']}")
-            
-            # Validate comic pricing and add warnings if needed
-            final_price = price_result.get("final_price", 0)
-            title = ordered.get("Title & Issue", "")
-            issue = extract_issue_number(title)  # Properly extract issue number
-            
-            validation = validate_comic_price(final_price, title, issue)
-            
-            if validation["warning"]:
-                # Add warning to AI Notes
-                current_notes = ordered.get("AI Notes", "")
-                warning_text = f"⚠️ {validation['warning']}"
-                if current_notes:
-                    ordered["AI Notes"] = f"{warning_text}\n\n{current_notes}"
-                else:
-                    ordered["AI Notes"] = warning_text
-                
-                logger.warning(f"Comic validation warning: {validation['warning']}")
-                
         else:
             logger.info(f"No base_price found: {price_result}")
 
@@ -334,76 +243,6 @@ async def extract_fields_with_vision(
         if not any(ordered.values()):
             ordered["Title"] = f"Unrecognized Item ({source_filename})"
 
-    # --- Market pricing integration ---
-    # Extract identification for pricing lookup
-    title = ordered.get("Title") or ordered.get("Title & Issue")
-    artist = ordered.get("Artist") if type_ == "record" else None
-    
-    # For records, default to "good" condition since they're in protective sleeves
-    if type_ == "record":
-        condition = "good"  # Default to good condition for records in protective sleeves
-    else:
-        condition = ordered.get("Condition") or "vg"
-    
-    if title and title.strip():
-        try:
-            logger.info(f"Getting market price for: {title} | {artist or 'N/A'} | {type_} | condition: {condition}")
-            
-            # Get real market pricing (async-safe execution)
-            price_result = get_best_price(title, artist=artist, category=type_, 
-                                        condition=condition, venue="antique_store")
-            
-            if price_result and price_result.get("final_price"):
-                # Use market price
-                market_price = price_result["final_price"]
-                ordered["Price"] = f"${market_price:.2f}"
-                
-                # Log sources for debugging
-                sources = price_result.get("sources", {})
-                logger.info(f"Market pricing successful: ${market_price:.2f} from {list(sources.keys())}")
-                
-                # Add pricing reasoning to AI Notes
-                if price_result.get("reasoning"):
-                    existing_notes = ordered.get("AI Notes", "")
-                    if existing_notes:
-                        ordered["AI Notes"] = f"{existing_notes}; {price_result['reasoning']}"
-                    else:
-                        ordered["AI Notes"] = price_result["reasoning"]
-                
-                # Store base price for comics, cards, and records (don't add to AI Notes)
-                if price_result.get("base_price"):
-                    ordered["Base_Price"] = price_result["base_price"]
-                    logger.info(f"Set Base_Price field to: {price_result['base_price']} (should be eBay median)")
-                    logger.info(f"Final price was: {price_result.get('final_price')}")
-                    logger.info(f"Base_Price field in ordered: {ordered.get('Base_Price')}")
-                else:
-                    logger.info(f"No base_price found in result: {price_result.keys()}")
-                    logger.info(f"price_result contents: {price_result}")
-                
-                # Add pricing note if available
-                if price_result.get("note"):
-                    logger.info(f"Pricing note: {price_result['note']}")
-                    
-            else:
-                # Fallback to vision estimate with appropriate minimum
-                minimum_prices = {"comic": "$4.00", "record": "$4.00", "card": "$1.00", "anything": "$3.00"}
-                minimum = minimum_prices.get(type_, "$3.00")
-                ordered["Price"] = enforce_price(ordered.get("Price", ""), minimum)
-                logger.info(f"No market data found, using vision estimate: {ordered['Price']}")
-                
-        except Exception as e:
-            # Fallback to vision estimate on any error
-            minimum_prices = {"comic": "$4.00", "record": "$4.00", "card": "$1.00", "anything": "$3.00"}
-            minimum = minimum_prices.get(type_, "$3.00")
-            ordered["Price"] = enforce_price(ordered.get("Price", ""), minimum)
-            logger.warning(f"Market pricing failed: {e}, using vision estimate: {ordered['Price']}")
-    else:
-        # No title available, use vision estimate
-        minimum_prices = {"comic": "$4.00", "record": "$4.00", "card": "$1.00", "anything": "$3.00"}
-        minimum = minimum_prices.get(type_, "$3.00")
-        ordered["Price"] = enforce_price(ordered.get("Price", ""), minimum)
-        logger.warning(f"No title available, using vision estimate: {ordered['Price']}")
-
     # --- Append structured output to a daily log file ---
     try:
         date_str = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -415,7 +254,7 @@ async def extract_fields_with_vision(
                 "type": type_,
                 "ordered": ordered
             }) + "\n")
-        logger.info(f"Appended structured output -> {out_path}")
+        logger.info(f"Appended structured output → {out_path}")
     except Exception as e:
         logger.warning(f"Could not append vision output log: {e}")
 
