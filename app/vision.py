@@ -313,6 +313,8 @@ async def extract_fields_with_vision(
             if langgraph_result["success"]:
                 # Extract pricing result from LangGraph messages
                 messages = langgraph_result.get("messages", [])
+                logger.info(f"LangGraph returned {len(messages)} messages")
+                logger.info(f"Message types: {[type(msg) for msg in messages]}")
                 pricing_result = None
                 
                 # Look for pricing data in tool responses
@@ -441,6 +443,8 @@ async def extract_fields_with_vision(
                 if langgraph_result["success"]:
                     # Extract pricing result from LangGraph messages
                     messages = langgraph_result.get("messages", [])
+                    logger.info(f"LangGraph returned {len(messages)} messages")
+                    logger.info(f"Message types: {[type(msg) for msg in messages]}")
                     pricing_result = None
                     
                     # Look for pricing data in tool responses
