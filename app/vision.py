@@ -310,15 +310,33 @@ async def extract_fields_with_vision(
                 session_id=session_id
             )
             
-            if langgraph_result["success"] and langgraph_result.get("pricing_result"):
-                # Extract pricing result from LangGraph
-                pricing_result = langgraph_result["pricing_result"]
-                price_result = {
-                    "final_price": pricing_result.get("final_price"),
-                    "base_price": pricing_result.get("base_price"),
-                    "reasoning": langgraph_result.get("messages", [""])[-1] if langgraph_result.get("messages") else "LangGraph pricing analysis"
-                }
-                logger.info(f"LangGraph pricing successful: ${price_result['final_price']:.2f}")
+            if langgraph_result["success"]:
+                # Extract pricing result from LangGraph messages
+                messages = langgraph_result.get("messages", [])
+                pricing_result = None
+                
+                # Look for pricing data in tool responses
+                for msg in messages:
+                    if hasattr(msg, 'content') and isinstance(msg.content, str):
+                        try:
+                            if msg.content.startswith('{"source":'):
+                                data = json.loads(msg.content)
+                                if data.get("source") in ["ebay_api", "cache"] and data.get("data"):
+                                    pricing_result = data["data"]
+                                    break
+                        except:
+                            continue
+                
+                if pricing_result:
+                    price_result = {
+                        "final_price": pricing_result.get("final_price"),
+                        "base_price": pricing_result.get("base_price"),
+                        "reasoning": langgraph_result.get("messages", [""])[-1] if langgraph_result.get("messages") else "LangGraph pricing analysis"
+                    }
+                    logger.info(f"LangGraph pricing successful: ${price_result['final_price']:.2f}")
+                else:
+                    logger.warning("LangGraph pricing completed but no pricing data found in messages")
+                    price_result = None
             else:
                 logger.warning(f"LangGraph pricing failed: {langgraph_result.get('error', 'Unknown error')}")
                 # Fallback to original pricing
@@ -417,16 +435,34 @@ async def extract_fields_with_vision(
                     session_id=session_id
                 )
                 
-                if langgraph_result["success"] and langgraph_result.get("pricing_result"):
-                    # Extract pricing result from LangGraph
-                    pricing_result = langgraph_result["pricing_result"]
-                    price_result = {
-                        "final_price": pricing_result.get("final_price"),
-                        "base_price": pricing_result.get("base_price"),
-                        "reasoning": langgraph_result.get("messages", [""])[-1] if langgraph_result.get("messages") else "LangGraph pricing analysis",
-                        "sources": {"langgraph": True}
-                    }
-                    logger.info(f"LangGraph pricing successful: ${price_result['final_price']:.2f}")
+                if langgraph_result["success"]:
+                    # Extract pricing result from LangGraph messages
+                    messages = langgraph_result.get("messages", [])
+                    pricing_result = None
+                    
+                    # Look for pricing data in tool responses
+                    for msg in messages:
+                        if hasattr(msg, 'content') and isinstance(msg.content, str):
+                            try:
+                                if msg.content.startswith('{"source":'):
+                                    data = json.loads(msg.content)
+                                    if data.get("source") in ["ebay_api", "cache"] and data.get("data"):
+                                        pricing_result = data["data"]
+                                        break
+                            except:
+                                continue
+                    
+                    if pricing_result:
+                        price_result = {
+                            "final_price": pricing_result.get("final_price"),
+                            "base_price": pricing_result.get("base_price"),
+                            "reasoning": langgraph_result.get("messages", [""])[-1] if langgraph_result.get("messages") else "LangGraph pricing analysis",
+                            "sources": {"langgraph": True}
+                        }
+                        logger.info(f"LangGraph pricing successful: ${price_result['final_price']:.2f}")
+                    else:
+                        logger.warning("LangGraph pricing completed but no pricing data found in messages")
+                        price_result = None
                 else:
                     logger.warning(f"LangGraph pricing failed: {langgraph_result.get('error', 'Unknown error')}")
                     # Fallback to original pricing

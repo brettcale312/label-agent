@@ -90,8 +90,11 @@ class PricingAgent:
         # Add system message to state
         messages = [system_message] + state["messages"]
         
+        # Bind tools to model for this conversation
+        model_with_tools = self.model.bind_tools(self.tools)
+        
         # Get response from model
-        response = self.model.invoke(messages)
+        response = model_with_tools.invoke(messages)
         
         return {
             "messages": [response],
