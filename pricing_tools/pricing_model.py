@@ -250,7 +250,7 @@ def get_best_price(
         ebay_base_price = ebay_median or weighted_avg
         final_price = calculate_comic_price(ebay_base_price, condition, year)
         reasoning = (
-            f"Base eBay median ${ebay_base_price:.2f} → comic pricing logic applied ({condition})."
+            f"Base eBay median ${ebay_base_price:.2f} -> comic pricing logic applied ({condition})."
         )
 
     # === Card pricing ===
@@ -266,9 +266,9 @@ def get_best_price(
             if abs(final_price - base_price) < 0.05:
                 reasoning = f"Base eBay median ${base_price:.2f} used directly (condition already reflected in market)."
             elif final_price < base_price:
-                reasoning = f"Base eBay median ${base_price:.2f} adjusted for visible wear → ${final_price:.2f} booth price."
+                reasoning = f"Base eBay median ${base_price:.2f} adjusted for visible wear -> ${final_price:.2f} booth price."
             else:
-                reasoning = f"Base eBay median ${base_price:.2f} rounded for booth display → ${final_price:.2f}."
+                reasoning = f"Base eBay median ${base_price:.2f} rounded for booth display -> ${final_price:.2f}."
         else:
             reasoning = "No reliable price data; used adjusted rarity floor."
 
