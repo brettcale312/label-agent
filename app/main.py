@@ -19,10 +19,32 @@ from .pricing import apply_pricing_rules
 from .sheets import append_row, get_next_inventory_number
 from .sandpiper import create_item_and_barcode
 from .models import IngestResponse
+from langgraph_tools.pricing_agent import PricingAgent
+from database.connection import get_db_session
+from database.operations import PricingSessionOps
 
 app = FastAPI(title="Label Agent Starter", version="0.4.3")
 
 templates = Jinja2Templates(directory="templates")
+
+# Global LangGraph agent and session management
+_langgraph_agent = None
+_current_session_id = None
+
+def get_langgraph_agent():
+    """Get or create the global LangGraph agent instance."""
+    global _langgraph_agent
+    if _langgraph_agent is None:
+        _langgraph_agent = PricingAgent(model_name="gpt-4o-mini")
+    return _langgraph_agent
+
+def get_or_create_session():
+    """Get or create a pricing session."""
+    global _current_session_id
+    if _current_session_id is None:
+        agent = get_langgraph_agent()
+        _current_session_id = agent.create_session("web_user", "Web Interface Session")
+    return _current_session_id
 
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -63,11 +85,18 @@ async def ingest(image: UploadFile, type: str = Form(...)):
     inv_num = await get_next_inventory_number(type)
     fields["Inventory #"] = inv_num
 
-    # Save temp JSON for review
+    # Get LangGraph session for this request
+    langgraph_session_id = get_or_create_session()
+
+    # Save temp JSON for review (include LangGraph session info)
     session_id = str(uuid.uuid4())
     temp_path = f"logs/temp_{session_id}.json"
     with open(temp_path, "w", encoding="utf-8") as f:
-        json.dump({"type": type, "fields": fields}, f, indent=2)
+        json.dump({
+            "type": type, 
+            "fields": fields,
+            "langgraph_session_id": langgraph_session_id
+        }, f, indent=2)
 
     review_url = f"http://{os.getenv('LOCAL_IP', '10.0.0.66')}:8080/review/{session_id}"
     return JSONResponse({"ok": True, "review_url": review_url})
@@ -113,6 +142,7 @@ async def approve_item(request: Request, session_id: str):
 
     type_ = data.get("type")
     fields = dict(form)
+    langgraph_session_id = data.get("langgraph_session_id")
 
     # --- Normalize price formatting ---
     val = fields.get("Price", "").strip()
@@ -141,6 +171,35 @@ async def approve_item(request: Request, session_id: str):
         log_event("error", {"error": str(e)})
 
     fields["Barcode"] = barcode
+
+    # --- Save to LangGraph database ---
+    if langgraph_session_id:
+        try:
+            from database.operations import ItemOps
+            
+            # Prepare item data for LangGraph database
+            item_data = {
+                'item_type': type_,
+                'title': fields.get('Title', fields.get('Title & Issue', 'Unknown Item')),
+                'condition': fields.get('Condition', 'unknown'),
+                'base_price': float(fields.get('Base_Price', 0)) if fields.get('Base_Price') else None,
+                'final_price': float(fields.get('Price', '$0').replace('$', '')),
+                'pricing_reasoning': fields.get('AI Notes', ''),
+                'ai_notes': fields.get('AI Notes', ''),
+                'barcode': barcode,
+                'publisher': fields.get('Publisher', ''),
+                'artist': fields.get('Artist', '')
+            }
+            
+            db = get_db_session()
+            try:
+                item = ItemOps.create_item(db, langgraph_session_id, item_data)
+                log_event("langgraph_save", {"item_id": item.id, "session_id": langgraph_session_id})
+            finally:
+                db.close()
+                
+        except Exception as e:
+            log_event("langgraph_error", {"error": str(e)})
 
     # Ensure fields are in the correct column order for the spreadsheet
     from .models import row_order

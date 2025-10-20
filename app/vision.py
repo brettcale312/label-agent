@@ -9,12 +9,24 @@ from openai import OpenAI
 from PIL import Image
 from .models import COMIC_COLUMNS, CARD_COLUMNS, RECORD_COLUMNS, ANYTHING_COLUMNS
 from pricing_tools.pricing_model import get_best_price
+from langgraph_tools.pricing_agent import PricingAgent
 from utils.logger import get_logger
 
 LOG_DIR = "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 
 logger = get_logger("vision")
+
+# Global LangGraph agent instance
+_langgraph_agent = None
+
+def get_langgraph_agent():
+    """Get or create the global LangGraph agent instance."""
+    global _langgraph_agent
+    if _langgraph_agent is None:
+        _langgraph_agent = PricingAgent(model_name="gpt-4o-mini")
+        logger.info("Created global LangGraph agent instance")
+    return _langgraph_agent
 
 
 def _ts():
@@ -281,14 +293,53 @@ async def extract_fields_with_vision(
             }
             logger.info(f"Fallback metadata inferred: {metadata}")
 
-        # --- Price lookup ---
-        price_result = get_best_price(
-            title=ordered.get("Title", ""),
-            category=type_,
-            condition=condition,
-            venue="antique_store",
-            metadata=metadata,
-        )
+        # --- Price lookup with LangGraph agent ---
+        try:
+            agent = get_langgraph_agent()
+            user_id = "default_user"  # You can make this configurable later
+            
+            # Create or get session for this user
+            session_id = agent.get_or_create_session(user_id)
+            
+            # Use LangGraph agent for intelligent pricing
+            langgraph_result = agent.price_item(
+                user_id=user_id,
+                item_description=ordered.get("Title", ""),
+                item_type=type_,
+                condition=condition,
+                session_id=session_id
+            )
+            
+            if langgraph_result["success"] and langgraph_result.get("pricing_result"):
+                # Extract pricing result from LangGraph
+                pricing_result = langgraph_result["pricing_result"]
+                price_result = {
+                    "final_price": pricing_result.get("final_price"),
+                    "base_price": pricing_result.get("base_price"),
+                    "reasoning": langgraph_result.get("messages", [""])[-1] if langgraph_result.get("messages") else "LangGraph pricing analysis"
+                }
+                logger.info(f"LangGraph pricing successful: ${price_result['final_price']:.2f}")
+            else:
+                logger.warning(f"LangGraph pricing failed: {langgraph_result.get('error', 'Unknown error')}")
+                # Fallback to original pricing
+                price_result = get_best_price(
+                    title=ordered.get("Title", ""),
+                    category=type_,
+                    condition=condition,
+                    venue="antique_store",
+                    metadata=metadata,
+                )
+                
+        except Exception as e:
+            logger.error(f"LangGraph pricing error: {e}")
+            # Fallback to original pricing
+            price_result = get_best_price(
+                title=ordered.get("Title", ""),
+                category=type_,
+                condition=condition,
+                venue="antique_store",
+                metadata=metadata,
+            )
 
         if price_result and price_result.get("final_price"):
             ordered["Price"] = f"${price_result['final_price']:.2f}"
@@ -349,9 +400,44 @@ async def extract_fields_with_vision(
         try:
             logger.info(f"Getting market price for: {title} | {artist or 'N/A'} | {type_} | condition: {condition}")
             
-            # Get real market pricing (async-safe execution)
-            price_result = get_best_price(title, artist=artist, category=type_, 
-                                        condition=condition, venue="antique_store")
+            # Get real market pricing with LangGraph agent
+            try:
+                agent = get_langgraph_agent()
+                user_id = "default_user"
+                
+                # Create or get session for this user
+                session_id = agent.get_or_create_session(user_id)
+                
+                # Use LangGraph agent for intelligent pricing
+                langgraph_result = agent.price_item(
+                    user_id=user_id,
+                    item_description=title,
+                    item_type=type_,
+                    condition=condition,
+                    session_id=session_id
+                )
+                
+                if langgraph_result["success"] and langgraph_result.get("pricing_result"):
+                    # Extract pricing result from LangGraph
+                    pricing_result = langgraph_result["pricing_result"]
+                    price_result = {
+                        "final_price": pricing_result.get("final_price"),
+                        "base_price": pricing_result.get("base_price"),
+                        "reasoning": langgraph_result.get("messages", [""])[-1] if langgraph_result.get("messages") else "LangGraph pricing analysis",
+                        "sources": {"langgraph": True}
+                    }
+                    logger.info(f"LangGraph pricing successful: ${price_result['final_price']:.2f}")
+                else:
+                    logger.warning(f"LangGraph pricing failed: {langgraph_result.get('error', 'Unknown error')}")
+                    # Fallback to original pricing
+                    price_result = get_best_price(title, artist=artist, category=type_, 
+                                                condition=condition, venue="antique_store")
+                    
+            except Exception as e:
+                logger.error(f"LangGraph pricing error: {e}")
+                # Fallback to original pricing
+                price_result = get_best_price(title, artist=artist, category=type_, 
+                                            condition=condition, venue="antique_store")
             
             if price_result and price_result.get("final_price"):
                 # Use market price
