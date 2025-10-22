@@ -17,6 +17,8 @@ import base64
 import json
 import os
 
+from pricing_tools.ebay import search_ebay
+
 logger = get_logger(__name__)
 client = OpenAI()
 
@@ -218,3 +220,11 @@ pricing_tools = [
     save_priced_item,
     get_session_history,
 ]
+
+ENABLE_EBAY_TOOL = os.getenv("ENABLE_EBAY_TOOL", "false").lower() in ("true", "1", "yes")
+
+if ENABLE_EBAY_TOOL:
+    pricing_tools.append(search_ebay)
+    logger.info("[PricingAgent] ENABLE_EBAY_TOOL=true — eBay tool registered")
+else:
+    logger.info("[PricingAgent] ENABLE_EBAY_TOOL not set — eBay tool disabled")
