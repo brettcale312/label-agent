@@ -70,3 +70,23 @@ Thumbs.db
 # ========================
 # Backup folder (captured once, then ignored)
 backups/
+
+# Database files (local development)
+*.db
+*.sqlite
+*.sqlite3
+
+# Test images and sample files
+test_images/
+sample.jpg
+test_*.jpg
+test_*.png
+
+# Debug and testing scripts
+quick_agent_check.py
+test_*.py
+debug_*.py
+
+# Temporary agent state files
+logs/agent_state.json
+logs/debug_vision.jpg

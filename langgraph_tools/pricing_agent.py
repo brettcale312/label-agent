@@ -1,11 +1,14 @@
 """
-LangGraph pricing agent with session management and database integration.
+LangGraph Pricing Agent — unified vision + reasoning + structured output.
+Handles image recognition, market search, and price reasoning inside GPT-4o.
 """
 
 from typing import Dict, Any, List, Optional, TypedDict, Annotated
-from datetime import datetime
+import base64
+import io
+import json
 import operator
-
+from PIL import Image
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
@@ -14,333 +17,198 @@ from langchain_openai import ChatOpenAI
 from database.connection import get_db_session
 from database.operations import PricingSessionOps
 from langgraph_tools.pricing_tools import pricing_tools
+from schemas.pricing_schemas import get_schema
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
+# ---------------------------------------------------------------------
+# LangGraph State Definition
+# ---------------------------------------------------------------------
 class PricingAgentState(TypedDict):
-    """State for the pricing agent."""
     messages: Annotated[List, operator.add]
     session_id: int
     user_id: str
     current_item: Optional[Dict[str, Any]]
     pricing_result: Optional[Dict[str, Any]]
-    learned_patterns: List[Dict[str, Any]]
-    user_preferences: Dict[str, Any]
 
 
+# ---------------------------------------------------------------------
+# Pricing Agent Core
+# ---------------------------------------------------------------------
 class PricingAgent:
-    """LangGraph pricing agent with persistent session management."""
-    
+    """Unified pricing + vision agent."""
+
     def __init__(self, model_name: str = "gpt-4o-mini"):
-        self.model = ChatOpenAI(model=model_name, temperature=0.1)
+        self.model = ChatOpenAI(model=model_name, temperature=0.2, streaming=False)
         self.tools = pricing_tools
         self.tool_node = ToolNode(self.tools)
-        
-        # Create the graph
         self.graph = self._create_graph()
-        
+        logger.info(f"[PricingAgent] Initialized with model {model_name}")
+
+    # -----------------------------------------------------------------
+    # Graph setup
+    # -----------------------------------------------------------------
     def _create_graph(self) -> StateGraph:
-        """Create the LangGraph workflow."""
-        
-        # Create the state graph
         workflow = StateGraph(PricingAgentState)
-        
-        # Add nodes
         workflow.add_node("agent", self._agent_node)
-        workflow.add_node("tools", self.tool_node)
-        workflow.add_node("save_results", self._save_results_node)
-        
-        # Set entry point
         workflow.set_entry_point("agent")
-        
-        # Add edges
-        workflow.add_conditional_edges(
-            "agent",
-            self._should_use_tools,
-            {
-                "tools": "tools",
-                "save": "save_results",
-                "end": END
-            }
-        )
-        
-        workflow.add_edge("tools", "agent")
-        workflow.add_edge("save_results", END)
-        
+        workflow.add_edge("agent", END)
         return workflow.compile()
-    
+
+    # -----------------------------------------------------------------
+    # Agent core
+    # -----------------------------------------------------------------
     def _agent_node(self, state: PricingAgentState) -> Dict[str, Any]:
-        """Main agent node that processes pricing requests."""
-        
-        # Get user preferences
-        if not state.get("user_preferences"):
-            prefs_result = self.tools[5].invoke({"user_id": state["user_id"]})  # get_user_preferences
-            state["user_preferences"] = prefs_result
-        
-        # Get learned patterns for context
-        if not state.get("learned_patterns"):
-            patterns_result = self.tools[3].invoke({"pattern_type": "series_pricing"})  # get_learned_patterns
-            user_adjustments = self.tools[3].invoke({"pattern_type": "user_adjustment"})  # get user adjustments
-            state["learned_patterns"] = patterns_result + user_adjustments
-        
-        # Create system message with context
-        system_message = self._create_system_message(state)
-        
-        # Add system message to state
-        messages = [system_message] + state["messages"]
-        
-        # Bind tools to model for this conversation
-        model_with_tools = self.model.bind_tools(self.tools)
-        
-        # Get response from model
-        response = model_with_tools.invoke(messages)
-        
-        # If the response doesn't contain tool calls, it means the agent is providing reasoning
-        # If it does contain tool calls, we need to wait for the tools to be executed first
-        if hasattr(response, 'tool_calls') and response.tool_calls:
-            # Agent wants to call tools first
-            return {
-                "messages": [response],
-                "session_id": state["session_id"],
-                "user_id": state["user_id"],
-                "current_item": state.get("current_item"),
-                "pricing_result": state.get("pricing_result"),
-                "learned_patterns": state.get("learned_patterns", []),
-                "user_preferences": state.get("user_preferences", {})
-            }
-        else:
-            # Agent is providing reasoning without tool calls
-            return {
-                "messages": [response],
-                "session_id": state["session_id"],
-                "user_id": state["user_id"],
-                "current_item": state.get("current_item"),
-                "pricing_result": state.get("pricing_result"),
-                "learned_patterns": state.get("learned_patterns", []),
-                "user_preferences": state.get("user_preferences", {})
-            }
-    
+        """Run a single reasoning step for pricing and recognition."""
+        messages = [self._create_system_message(state)] + state["messages"]
+        response = self.model.invoke(messages)
+        return {
+            "messages": [response],
+            "session_id": state["session_id"],
+            "user_id": state["user_id"],
+        }
+
+    # -----------------------------------------------------------------
+    # System Prompt — dynamically built per schema type
+    # -----------------------------------------------------------------
     def _create_system_message(self, state: PricingAgentState) -> SystemMessage:
-        """Create system message with context and instructions."""
-        
-        prefs = state.get("user_preferences", {})
-        patterns = state.get("learned_patterns", [])
-        
-        system_prompt = f"""You are an expert collectibles pricing assistant with access to real-time market data and learning capabilities.
+        """Full descriptive system prompt for image + pricing reasoning."""
+        type_ = state.get("current_item", {}).get("type", "anything").lower()
+        structure = get_schema(type_)
 
-## Your Capabilities:
-- Search eBay, Discogs, and web for pricing data
-- Access learned patterns from previous sessions
-- Save new patterns as you learn
-- Remember user preferences and session context
+        # Tailored item-type context
+        if type_ == "comic":
+            context = """
+You are an expert in comic book identification and pricing.
+- Detect title, issue number, publisher, and key visual features.
+- Identify special factors: first appearances, variant covers, etc.
+- Output "Title_Issue" instead of "Title".
+- Always include "Publisher" and "Base_Price" even if blank.
+- Include 3 concise sales bullets.
+- Condition: mint, near mint, very fine, fine, good.
+- Base pricing on eBay sold listings and collector market; round UP. Minimum $4.
+"""
+        elif type_ == "card":
+            context = """
+You are an expert in collectible trading cards.
+- Detect title, card number, set name, rarity, holo type, and year.
+- Include 2 concise sales bullets.
+- Condition: mint, near mint, lightly played, moderately played, heavily played.
+- Price based on eBay or TCGPlayer; round UP. Minimum $1.
+"""
+        elif type_ == "record":
+            context = """
+You are an expert in vinyl records and Discogs pricing.
+- Identify title, artist, label, year, genre, and condition.
+- Base pricing on Discogs/eBay sold data; round UP. Minimum $4.
+"""
+        else:
+            context = """
+You are an expert in collectible and vintage goods.
+- Identify item type, material, markings, and short appealing description.
+- Include 2–3 short sales bullets.
+- Price for antique booth or online resale; round UP. Minimum $3.
+"""
 
-## Current Context:
-- User ID: {state["user_id"]}
-- Session ID: {state["session_id"]}
-- User Preferences: {prefs}
+        # Structured system prompt
+        full_prompt = f"""
+You are a collectibles cataloging and pricing AI.
+Analyze the provided image of a {type_}, reason about its market value,
+and output ONLY valid JSON in the following structure:
 
-## Learned Patterns:
-{self._format_patterns(patterns)}
+{json.dumps(structure, indent=2)}
 
-## Pricing Guidelines:
-1. **Data Sources**: Use eBay for recent sales, Discogs for records, web search for additional context
-2. **Condition Impact**: Apply appropriate multipliers based on condition
-3. **Venue Context**: User prefers {prefs.get('default_venue', 'antique_store')} pricing
-4. **Learning**: Save patterns when you notice trends or make corrections
-5. **Reasoning**: Always explain your pricing logic clearly
+Rules:
+- Always fill every key (use empty string if unknown).
+- Do NOT include any markdown or commentary outside the JSON.
+- Always include reasoning in "AI Notes".
+- Round all prices UP to the nearest dollar.
+{context}
+"""
+        return SystemMessage(content=full_prompt)
 
-## Available Tools:
-- search_ebay_prices: Get eBay pricing data
-- search_discogs_prices: Get Discogs pricing data (records only)
-- search_web_prices: Search web for additional pricing context
-- get_learned_patterns: Retrieve patterns from previous sessions
-- save_learned_pattern: Save new patterns you discover
-- get_user_preferences: Get user's pricing preferences
-- save_priced_item: Save the final pricing result
-- get_session_history: View items processed in this session
-
-## Learning from User Adjustments:
-- Pay attention to 'user_adjustment' patterns in learned patterns
-- These show when users adjusted AI prices and by how much
-- Use this data to improve future pricing for similar items
-- Consider user preferences when they consistently adjust prices
-
-## Process:
-1. Analyze the item description and identify key details
-2. Search relevant pricing sources (eBay, Discogs, web) to get market data
-3. After getting the data, analyze it and provide your own pricing recommendation
-4. Use your own reasoning to determine appropriate pricing
-5. Consider condition, venue, market trends, and item rarity
-6. Apply your judgment rather than rigid formulas
-7. Consider learned patterns and user preferences
-8. Provide clear reasoning for your pricing decision
-9. Save the result and any new patterns learned
-
-## Important: After Getting Data, You Must Reason About It
-- When you get eBay/Discogs data, don't just return it
-- Analyze the data and provide your own pricing recommendation
-- Explain why you chose that price based on your analysis
-- Don't use predefined logic or formulas
-
-## CRITICAL: Use Your Own Reasoning - DO NOT Use Predefined Logic
-- After getting market data, analyze it and provide your own pricing recommendation
-- DO NOT use any predefined pricing formulas or multipliers
-- DO NOT use "comic pricing logic applied" or similar predefined reasoning
-- Think about what makes this item valuable or common
-- Consider market trends, condition impact, and venue context
-- Use your knowledge of collectibles to make informed decisions
-- Explain your reasoning clearly so the user understands your logic
-- Always provide a final price recommendation with clear reasoning
-
-## Example Response Format:
-"Based on the eBay data showing a median of $X.XX, I recommend pricing this item at $Y.YY because [your reasoning about condition, rarity, market trends, etc.]"
-
-## What NOT to do:
-- Don't say "comic pricing logic applied"
-- Don't use predefined multipliers
-- Don't just apply formulas without thinking
-
-Always be thorough in your analysis and transparent in your reasoning."""
-        
-        return SystemMessage(content=system_prompt)
-    
-    def _format_patterns(self, patterns: List[Dict[str, Any]]) -> str:
-        """Format learned patterns for display."""
-        if not patterns:
-            return "No learned patterns available yet."
-        
-        formatted = []
-        for pattern in patterns[:5]:  # Show top 5 patterns
-            formatted.append(
-                f"- {pattern['pattern_key']}: {pattern['pattern_data']} "
-                f"(confidence: {pattern['confidence_score']:.2f}, samples: {pattern['sample_size']})"
-            )
-        
-        return "\n".join(formatted)
-    
-    def _should_use_tools(self, state: PricingAgentState) -> str:
-        """Determine if tools should be used or if we should save results."""
-        
-        last_message = state["messages"][-1]
-        
-        # Check if the last message contains tool calls
-        if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
-            return "tools"
-        
-        # Check if we have a pricing result to save
-        if state.get("pricing_result"):
-            return "save"
-        
-        # Check if the message indicates completion with pricing reasoning
-        content = last_message.content.lower()
-        if any(phrase in content for phrase in ["final price", "pricing complete", "save result", "estimated price", "recommended price"]):
-            return "save"
-        
-        return "end"
-    
-    def _save_results_node(self, state: PricingAgentState) -> Dict[str, Any]:
-        """Save pricing results to database."""
-        
-        if not state.get("pricing_result"):
-            return {"messages": [AIMessage(content="No pricing result to save.")]}
-        
-        try:
-            # Save the priced item
-            save_result = self.tools[6].invoke({  # save_priced_item
-                "session_id": state["session_id"],
-                "item_data": state["pricing_result"]
-            })
-            
-            if save_result["success"]:
-                return {
-                    "messages": [AIMessage(content=f"✅ Pricing result saved successfully. Item ID: {save_result['item_id']}")]
-                }
-            else:
-                return {
-                    "messages": [AIMessage(content=f"❌ Error saving pricing result: {save_result.get('error', 'Unknown error')}")]
-                }
-                
-        except Exception as e:
-            logger.error(f"Error in save_results_node: {e}")
-            return {
-                "messages": [AIMessage(content=f"❌ Error saving results: {str(e)}")]
-            }
-    
+    # -----------------------------------------------------------------
+    # Session Helpers
+    # -----------------------------------------------------------------
     def create_session(self, user_id: str, session_name: Optional[str] = None) -> int:
-        """Create a new pricing session."""
+        db = get_db_session()
         try:
-            db = get_db_session()
-            try:
-                session = PricingSessionOps.create_session(db, user_id, session_name)
-                logger.info(f"Created new pricing session: {session.id} for user: {user_id}")
-                return session.id
-            finally:
-                db.close()
-        except Exception as e:
-            logger.error(f"Error creating session: {e}")
-            raise
-    
+            session = PricingSessionOps.create_session(db, user_id, session_name)
+            logger.info(f"[PricingAgent] Created new session {session.id} for {user_id}")
+            return session.id
+        finally:
+            db.close()
+
     def get_or_create_session(self, user_id: str) -> int:
-        """Get existing active session or create a new one."""
+        db = get_db_session()
         try:
-            db = get_db_session()
-            try:
-                # Try to get existing active session
-                session = PricingSessionOps.get_active_session(db, user_id)
-                if session:
-                    logger.info(f"Using existing session: {session.id} for user: {user_id}")
-                    return session.id
-                
-                # Create new session if none exists
-                return self.create_session(user_id)
-            finally:
-                db.close()
-        except Exception as e:
-            logger.error(f"Error getting/creating session: {e}")
-            raise
-    
-    def price_item(self, user_id: str, item_description: str, item_type: str, 
-                  condition: Optional[str] = None, session_id: Optional[int] = None) -> Dict[str, Any]:
-        """Price an item using the LangGraph agent."""
-        
+            session = PricingSessionOps.get_active_session(db, user_id)
+            if session:
+                logger.info(f"[PricingAgent] Using existing session {session.id} for {user_id}")
+                return session.id
+            return self.create_session(user_id)
+        finally:
+            db.close()
+
+    # -----------------------------------------------------------------
+    # Unified Vision + Reasoning Entry
+    # -----------------------------------------------------------------
+    def price_item_from_image(self, user_id: str, image_bytes: bytes, item_type: str) -> Dict[str, Any]:
+        """Main entry — analyzes image and returns structured pricing."""
         try:
-            # Get or create session
-            if not session_id:
-                session_id = self.get_or_create_session(user_id)
-            
-            # Create initial state
-            initial_state = {
-                "messages": [HumanMessage(content=f"Price this {item_type}: {item_description}. Condition: {condition or 'unknown'}")],
+            # --- Prepare image ---
+            image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+            image.thumbnail((1024, 1024))
+            buf = io.BytesIO()
+            image.save(buf, format="JPEG", quality=85)
+            image_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+            session_id = self.get_or_create_session(user_id)
+
+            # --- Construct message list ---
+            messages = [
+                HumanMessage(
+                    content=[
+                        {"type": "text", "text": f"Please analyze and price this {item_type}."},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+                    ]
+                )
+            ]
+
+            state = {
+                "messages": messages,
                 "session_id": session_id,
                 "user_id": user_id,
-                "current_item": {
-                    "description": item_description,
-                    "type": item_type,
-                    "condition": condition
-                }
+                "current_item": {"type": item_type},
             }
-            
-            # Run the graph
-            result = self.graph.invoke(initial_state)
-            
-            # Extract the final pricing result
-            final_messages = result.get("messages", [])
-            pricing_result = result.get("pricing_result")
-            
-            return {
-                "success": True,
-                "session_id": session_id,
-                "pricing_result": pricing_result,
-                "messages": [msg.content for msg in final_messages if hasattr(msg, 'content')],
-                "conversation_history": result.get("messages", [])
-            }
-            
+
+            # --- Invoke graph ---
+            result = self.graph.invoke(state)
+            final_message = result.get("messages", [])[-1]
+            content = getattr(final_message, "content", None)
+
+            # --- Parse structured JSON ---
+            parsed = {}
+            if isinstance(content, str):
+                try:
+                    parsed = json.loads(content)
+                except Exception:
+                    parsed = {"Title_Issue": "Unrecognized item", "AI Notes": content}
+            elif isinstance(content, list):
+                # Handle OpenAI multi-part outputs
+                for part in content:
+                    if isinstance(part, str) and part.strip().startswith("{"):
+                        try:
+                            parsed = json.loads(part)
+                            break
+                        except Exception:
+                            continue
+
+            logger.info(f"[PricingAgent] Parsed JSON result: {parsed}")
+            return {"success": True, "pricing_result": parsed, "session_id": session_id}
+
         except Exception as e:
-            logger.error(f"Error pricing item: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-                "session_id": session_id
-            }
+            logger.error(f"[PricingAgent] Error in price_item_from_image: {e}")
+            return {"success": False, "error": str(e)}

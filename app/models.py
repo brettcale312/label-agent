@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field
 from typing import List
 
 COMIC_COLUMNS = [
-    "Title & Issue",
+    "Title and Issue",
     "Bullet 1",
     "Bullet 2",
     "Bullet 3",
@@ -49,6 +49,7 @@ ANYTHING_COLUMNS = [
     "Price",
     "Inventory #",
     "Barcode",
+    "Condition",
     "AI Notes"
 ]
 

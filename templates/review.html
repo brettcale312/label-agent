@@ -103,25 +103,6 @@
       margin-top: 0;
       color: #856404;
     }
-    .condition-pricing {
-      background: #f0f8ff;
-      border: 1px solid #b3d9ff;
-      border-radius: 6px;
-      padding: 1em;
-      margin: 1em 0;
-    }
-    .condition-pricing-label {
-      font-weight: 600;
-      color: #1976d2;
-      margin-bottom: 0.5em;
-      display: block;
-    }
-    .condition-pricing-content {
-      font-family: monospace;
-      font-size: 0.9em;
-      color: #1976d2;
-      line-height: 1.3;
-    }
   </style>
 </head>
 <body>
@@ -129,7 +110,11 @@
   
   <div class="instructions">
     <h3>📝 Review Instructions</h3>
-    <p>Please review the AI-generated information below. Pay special attention to the <strong>Price</strong> and <strong>AI Notes</strong> - you can adjust the price if you disagree with the AI's assessment.</p>
+    <p>
+      Please review the AI-generated information below. Pay special attention to the 
+      <strong>Price</strong> and <strong>AI Notes</strong> — you can adjust the price 
+      if you disagree with the AI's assessment.
+    </p>
   </div>
 
   {% if data.get("AI Notes") %}
@@ -139,21 +124,10 @@
     </div>
   {% endif %}
 
-
   <form action="/approve/{{ session_id }}" method="post">
     {% for key, value in data.items() %}
       {% if key != "AI Notes" and key != "Barcode" and key != "Base_Price" %}
         {% if key == "Price" %}
-  <!-- Condition Pricing Display -->
-  {% if data.get("Condition") %}
-    <div class="condition-pricing" id="condition-pricing">
-      <span class="condition-pricing-label">💰 Pricing by Condition:</span>
-      <div class="condition-pricing-content" id="condition-pricing-content">
-        Loading pricing by condition...
-      </div>
-    </div>
-  {% endif %}
-          
           <div class="price-section">
             <label class="price-label" for="{{ key }}">💰 {{ key }} (Adjust if needed)</label>
             <input type="text" class="price-input" id="{{ key }}" name="{{ key }}" value="{{ value }}">
@@ -176,253 +150,5 @@
 
     <button type="submit">✅ Approve & Save</button>
   </form>
-
-<script>
-// Condition pricing calculation
-function calculateConditionPricing() {
-  const currentPrice = parseFloat(document.querySelector('input[name="Price"]').value.replace('$', ''));
-  const itemType = "{{ type_ }}";
-  
-  // For records, default to "good" condition since they're in protective sleeves
-  let currentCondition;
-  if (itemType === "record") {
-    currentCondition = "good";
-  } else {
-    currentCondition = "{{ data.get('Condition', '') }}".toLowerCase();
-  }
-  
-  if (!currentPrice || !currentCondition) return;
-  
-  // Define condition sets for different item types
-  const conditions = {
-    "record": ["sealed", "mint", "vg+", "vg", "good", "fair"],
-    "comic": ["fair", "near mint", "slabbed"], // Only show the 3 most relevant conditions
-    "card": ["mint", "near mint", "lightly played", "moderately played", "heavily played", "damaged"]
-  };
-  
-  const conditionList = conditions[itemType] || conditions["record"];
-  
-  // Calculate prices for each condition
-  const pricingSummary = [];
-  
-  if (itemType === "comic" || itemType === "card" || itemType === "record") {
-    // For comics and cards, use the Base_Price field directly
-    let basePrice;
-    const basePriceField = "{{ data.get('Base_Price', '') }}";
-    
-    if (basePriceField && basePriceField !== "" && basePriceField !== "None" && basePriceField !== "null") {
-      basePrice = parseFloat(basePriceField);
-      if (!isNaN(basePrice) && basePrice > 0) {
-        // Using Base_Price field
-      } else {
-        basePrice = reverseConditionAndVenueMultiplier(currentPrice, currentCondition);
-      }
-    } else {
-      // Fallback: reverse engineering (should rarely be needed now)
-      basePrice = reverseConditionAndVenueMultiplier(currentPrice, currentCondition);
-    }
-    
-    // Extract year from title if possible
-    const titleText = "{{ data.get('Title & Issue', '') }}";
-    const yearMatch = titleText.match(/\b(19|20)\d{2}\b/);
-    const year = yearMatch ? parseInt(yearMatch[0]) : null;
-    
-    conditionList.forEach(condition => {
-      let finalPrice;
-      if (itemType === "comic") {
-        finalPrice = calculateComicPrice(basePrice, condition, year);
-      } else {
-        // For cards and records, use standard condition multipliers
-        let adjustedPrice = applyConditionMultiplier(basePrice, condition);
-        
-        // Apply antique store venue multipliers based on BASE price (same logic as backend)
-        if (basePrice < 5) {
-          adjustedPrice = adjustedPrice * 2.5;
-        } else if (basePrice < 10) {
-          adjustedPrice = adjustedPrice * 1.75;
-        } else {
-          adjustedPrice = adjustedPrice * 1.2;
-        }
-        
-        finalPrice = applyAntiqueStoreRounding(adjustedPrice);
-      }
-      
-      if (isNaN(finalPrice)) {
-        pricingSummary.push(`${condition}: ERROR`);
-      } else {
-        pricingSummary.push(`${condition}: $${finalPrice.toFixed(2)}`);
-      }
-    });
-  } else {
-    // For other item types, use standard logic
-    const basePrice = reverseConditionAndVenueMultiplier(currentPrice, currentCondition);
-    
-    conditionList.forEach(condition => {
-      let adjustedPrice = applyConditionMultiplier(basePrice, condition);
-      
-      // Apply antique store venue multipliers based on BASE price (same logic as backend)
-      if (basePrice < 5) {
-        adjustedPrice = adjustedPrice * 2.5;
-      } else if (basePrice < 10) {
-        adjustedPrice = adjustedPrice * 1.75;
-      } else {
-        adjustedPrice = adjustedPrice * 1.2;
-      }
-      
-      const finalPrice = applyAntiqueStoreRounding(adjustedPrice);
-      pricingSummary.push(`${condition}: $${finalPrice.toFixed(2)}`);
-    });
-  }
-  
-  document.getElementById('condition-pricing-content').textContent = pricingSummary.join(', ');
-}
-
-function calculateComicPrice(basePrice, condition, year = null) {
-  if (!year) year = 2010; // Default to modern
-  
-  // Determine age category and base multiplier
-  let baseMultiplier;
-  if (year > 2005) {
-    // Dynamic multiplier based on eBay median to prevent over-inflation
-    if (basePrice <= 5) {
-      baseMultiplier = 1.75;
-    } else if (basePrice <= 8) {
-      // Linearly reduce from 1.75 → 1.1 across $5–$8
-      baseMultiplier = 1.75 - (basePrice - 5) * (0.65 / 3);
-    } else {
-      baseMultiplier = 1.1; // gentle boost for high medians
-    }
-  } else if (year >= 1980) {
-    baseMultiplier = 2.0; // copper/bronze
-  } else {
-    baseMultiplier = 2.5; // silver/golden
-  }
-  
-  // Apply base multiplier
-  let adjustedPrice = basePrice * baseMultiplier;
-  
-  // Apply condition adjustments
-  condition = condition.toLowerCase();
-  if (condition.includes("near mint")) {
-    adjustedPrice *= 1.1; // +10% for near mint
-  } else if (condition.includes("slabbed")) {
-    adjustedPrice *= 1.2; // +20% for slabbed
-  } else if (condition.includes("very fine")) {
-    adjustedPrice *= 1.0; // Base price for very fine
-  } else if (condition.includes("fine")) {
-    adjustedPrice *= 0.9; // -10% for fine
-  } else if (condition.includes("very good")) {
-    adjustedPrice *= 0.8; // -20% for very good
-  } else if (condition.includes("good")) {
-    adjustedPrice *= 0.7; // -30% for good
-  } else if (condition.includes("fair")) {
-    adjustedPrice *= 0.6; // -40% for fair
-  }
-  
-  // Round to booth-friendly price
-  return applyAntiqueStoreRounding(adjustedPrice);
-}
-
-function applyConditionMultiplier(base, condition) {
-  condition = condition.toLowerCase();
-  
-  // Record conditions
-  if (condition.includes("sealed") || condition.includes("mint")) return base * 1.6;
-  if (condition.includes("vg+")) return base * 1.2;
-  if (condition.includes("vg")) return base * 1.0;
-  if (condition.includes("good")) return base * 0.7;
-  if (condition.includes("fair")) return base * 0.5;
-  
-  // Comic conditions (legacy - now handled by calculateComicPrice)
-  if (condition.includes("near mint")) return base * 1.4;
-  if (condition.includes("very fine")) return base * 1.2;
-  if (condition.includes("fine")) return base * 1.0;
-  if (condition.includes("very good")) return base * 0.8;
-  
-  // Card conditions
-  if (condition.includes("lightly played")) return base * 1.2;
-  if (condition.includes("moderately played")) return base * 1.0;
-  if (condition.includes("heavily played")) return base * 0.7;
-  if (condition.includes("damaged")) return base * 0.5;
-  
-  return base * 1.0;
-}
-
-function reverseComicPricing(finalPrice, condition) {
-  // Reverse the comic pricing logic to get the base eBay price
-  // Formula: finalPrice = basePrice * ageMultiplier * conditionMultiplier
-  
-  // First, reverse the condition multiplier
-  let conditionAdjustedPrice = finalPrice;
-  condition = condition.toLowerCase();
-  
-  if (condition.includes("near mint")) {
-    conditionAdjustedPrice = finalPrice / 1.1; // Reverse +10%
-  } else if (condition.includes("slabbed")) {
-    conditionAdjustedPrice = finalPrice / 1.2; // Reverse +20%
-  } else if (condition.includes("very fine")) {
-    conditionAdjustedPrice = finalPrice / 0.9; // Reverse -10%
-  } else if (condition.includes("fine")) {
-    conditionAdjustedPrice = finalPrice / 0.8; // Reverse -20%
-  } else if (condition.includes("very good")) {
-    conditionAdjustedPrice = finalPrice / 0.7; // Reverse -30%
-  } else if (condition.includes("good")) {
-    conditionAdjustedPrice = finalPrice / 0.6; // Reverse -40%
-  }
-  
-  // For modern comics, use average multiplier (1.5x) as approximation for reverse calculation
-  // This is a simplification since the actual multiplier varies based on eBay median
-  const basePrice = conditionAdjustedPrice / 1.5;
-  
-  return basePrice;
-}
-
-function reverseConditionAndVenueMultiplier(price, condition) {
-  condition = condition.toLowerCase();
-  
-  // First reverse the condition multiplier to get condition-adjusted price
-  let conditionAdjustedPrice;
-  if (condition.includes("sealed") || condition.includes("mint")) conditionAdjustedPrice = price / 1.6;
-  else if (condition.includes("vg+")) conditionAdjustedPrice = price / 1.2;
-  else if (condition.includes("vg")) conditionAdjustedPrice = price / 1.0;
-  else if (condition.includes("good")) conditionAdjustedPrice = price / 0.7;
-  else if (condition.includes("fair")) conditionAdjustedPrice = price / 0.5;
-  else if (condition.includes("near mint")) conditionAdjustedPrice = price / 1.4;
-  else if (condition.includes("very fine")) conditionAdjustedPrice = price / 1.2;
-  else if (condition.includes("fine")) conditionAdjustedPrice = price / 1.0;
-  else if (condition.includes("very good")) conditionAdjustedPrice = price / 0.8;
-  else if (condition.includes("lightly played")) conditionAdjustedPrice = price / 1.2;
-  else if (condition.includes("moderately played")) conditionAdjustedPrice = price / 1.0;
-  else if (condition.includes("heavily played")) conditionAdjustedPrice = price / 0.7;
-  else if (condition.includes("damaged")) conditionAdjustedPrice = price / 0.5;
-  else conditionAdjustedPrice = price / 1.0;
-  
-  // Then reverse the antique store venue multiplier to get base price
-  if (conditionAdjustedPrice < 5) {
-    return conditionAdjustedPrice / 2.5;
-  } else if (conditionAdjustedPrice < 10) {
-    return conditionAdjustedPrice / 1.75;
-  } else {
-    return conditionAdjustedPrice / 1.2;
-  }
-}
-
-function applyAntiqueStoreRounding(price) {
-  if (price < 3) {
-    return Math.ceil(price * 4) / 4; // Round up to nearest .25
-  } else if (price < 5) {
-    return Math.ceil(price * 2) / 2; // Round up to nearest .50
-  } else {
-    return Math.ceil(price); // Round up to next dollar
-  }
-}
-
-// Calculate on page load
-document.addEventListener('DOMContentLoaded', calculateConditionPricing);
-
-// Recalculate when price changes
-document.querySelector('input[name="Price"]').addEventListener('input', calculateConditionPricing);
-</script>
-
 </body>
 </html>
