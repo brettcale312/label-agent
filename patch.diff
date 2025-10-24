@@ -1,0 +1,85 @@
+diff --git a/langgraph_tools/pricing_tools.py b/langgraph_tools/pricing_tools.py
+index 7ffa73ab17b33109e1bcaf953dd41055f1e8678d..4ddfbe8e7ac3b8788b08c441e6c106cb85cf9af7 100644
+--- a/langgraph_tools/pricing_tools.py
++++ b/langgraph_tools/pricing_tools.py
+@@ -1,44 +1,46 @@
+ """
+ LangGraph tools for pricing and vision operations.
+ These tools are used by the LangGraph agent to perform analysis and pricing tasks.
+ """
+ 
+ from typing import Dict, Any, Optional, List
+ from langchain_core.tools import tool
+ from database.connection import get_db_session
+ from database.operations import (
+     PricingSessionOps, ItemOps, LearnedPatternOps, UserPreferenceOps
+ )
+ from utils.logger import get_logger
+ from io import BytesIO
+ from PIL import Image
+ from openai import OpenAI
+ import base64
+ import json
+ import os
+ 
++from pricing_tools.ebay import search_ebay
++
+ logger = get_logger(__name__)
+ client = OpenAI()
+ 
+ # ---------------------------------------------------------------------------
+ # Vision Analysis Tool
+ # ---------------------------------------------------------------------------
+ 
+ @tool
+ def analyze_image_with_vision(image_base64: Any, item_type: str) -> Dict[str, Any]:
+     """
+     Analyze an image using the OpenAI Vision model to extract relevant details.
+     Returns structured JSON with basic title, condition, and notes.
+     """
+     try:
+         logger.info(f"[VISION] Starting analysis for type={item_type}")
+ 
+         # --- Normalize input ---
+         if isinstance(image_base64, Image.Image):
+             buf = BytesIO()
+             image_base64.convert("RGB").save(buf, format="JPEG", quality=85)
+             img_bytes = buf.getvalue()
+ 
+         elif isinstance(image_base64, (bytes, bytearray)):
+             img_bytes = bytes(image_base64)
+ 
+@@ -196,25 +198,33 @@ def save_priced_item(session_id: int, item_data: Dict[str, Any]) -> Dict[str, An
+ def get_session_history(session_id: int) -> List[Dict[str, Any]]:
+     """Retrieve the item history for a pricing session."""
+     try:
+         db = get_db_session()
+         try:
+             items = ItemOps.get_items_by_session(db, session_id)
+             return [item.__dict__ for item in items]
+         finally:
+             db.close()
+     except Exception as e:
+         logger.error(f"[TOOLS] Error getting session history: {e}")
+         return []
+ 
+ 
+ # ---------------------------------------------------------------------------
+ # Export all tools
+ # ---------------------------------------------------------------------------
+ pricing_tools = [
+     analyze_image_with_vision,
+     get_learned_patterns,
+     save_learned_pattern,
+     get_user_preferences,
+     save_priced_item,
+     get_session_history,
+ ]
++
++ENABLE_EBAY_TOOL = os.getenv("ENABLE_EBAY_TOOL", "false").lower() in ("true", "1", "yes")
++
++if ENABLE_EBAY_TOOL:
++    pricing_tools.append(search_ebay)
++    logger.info("[PricingAgent] ENABLE_EBAY_TOOL=true — eBay tool registered")
++else:
++    logger.info("[PricingAgent] ENABLE_EBAY_TOOL not set — eBay tool disabled")

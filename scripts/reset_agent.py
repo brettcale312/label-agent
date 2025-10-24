@@ -1,7 +1,7 @@
 # scripts/reset_agent.py
 import argparse, os, sqlite3, json
 
-DB_PATH = os.getenv("DB_PATH", "database.db")      # adjust if your app uses a different path
+DB_PATH = os.getenv("DB_PATH", "pricing_agent.db")      # adjust if your app uses a different path
 STATE_FILE = os.path.join("logs", "agent_state.json")
 
 NUKE_SQL = """

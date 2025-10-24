@@ -40,10 +40,8 @@ def analyze_image_with_vision(image_base64: Any, item_type: str) -> Dict[str, An
             buf = BytesIO()
             image_base64.convert("RGB").save(buf, format="JPEG", quality=85)
             img_bytes = buf.getvalue()
-
         elif isinstance(image_base64, (bytes, bytearray)):
             img_bytes = bytes(image_base64)
-
         elif isinstance(image_base64, str):
             logger.info(f"[VISION] Detected string input length={len(image_base64):,}")
             if "," in image_base64:
@@ -228,3 +226,13 @@ if ENABLE_EBAY_TOOL:
     logger.info("[PricingAgent] ENABLE_EBAY_TOOL=true — eBay tool registered")
 else:
     logger.info("[PricingAgent] ENABLE_EBAY_TOOL not set — eBay tool disabled")
+
+# ---------------------------------------------------------------------------
+# Helper: retrieve a tool by name (used by PricingAgent fallback)
+# ---------------------------------------------------------------------------
+def get_tool_by_name(name: str):
+    """Return a tool object by its registered name."""
+    for t in pricing_tools:
+        if getattr(t, "name", None) == name:
+            return t
+    return None

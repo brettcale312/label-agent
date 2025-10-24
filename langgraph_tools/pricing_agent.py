@@ -1,17 +1,19 @@
 """
-LangGraph Pricing Agent — unified vision + reasoning + structured output.
-Handles image recognition, market search, and price reasoning inside GPT-4o.
+LangGraph Pricing Agent — full 3-stage reasoning and pricing pipeline with structured vision output.
+---------------------------------------------------------------------------------------
+1. Vision Node → identifies item from image (structured with Pydantic)
+2. Tool Node → runs eBay or other market lookups
+3. Pricing Node → merges recognition + tool data into structured JSON
 """
 
-from typing import Dict, Any, List, Optional, TypedDict, Annotated
-import base64
-import io
-import json
-import operator
+import base64, io, json, operator, re, asyncio, nest_asyncio
+from typing import Dict, Any, List, Optional, Annotated
 from PIL import Image
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from pydantic import BaseModel, Field
+from typing_extensions import TypedDict
 from langchain_openai import ChatOpenAI
 
 from database.connection import get_db_session
@@ -20,11 +22,26 @@ from langgraph_tools.pricing_tools import pricing_tools
 from schemas.pricing_schemas import get_schema
 from utils.logger import get_logger
 
+nest_asyncio.apply()
+
+try:
+    from pricing_tools.ebay import search_ebay
+except Exception:
+    search_ebay = None
+
 logger = get_logger(__name__)
 
-
 # ---------------------------------------------------------------------
-# LangGraph State Definition
+# Structured Vision Output
+# ---------------------------------------------------------------------
+class VisionOutput(BaseModel):
+    title: str = Field(..., description="Title or name of the item.")
+    issue_number: Optional[str] = None
+    publisher: Optional[str] = None
+    condition: Optional[str] = None
+    notable_attributes: List[str] = []
+    raw_summary: Optional[str] = None
+
 # ---------------------------------------------------------------------
 class PricingAgentState(TypedDict):
     messages: Annotated[List, operator.add]
@@ -32,105 +49,160 @@ class PricingAgentState(TypedDict):
     user_id: str
     current_item: Optional[Dict[str, Any]]
     pricing_result: Optional[Dict[str, Any]]
+    tool_results: Optional[Dict[str, Any]]
 
-
-# ---------------------------------------------------------------------
-# Pricing Agent Core
 # ---------------------------------------------------------------------
 class PricingAgent:
-    """Unified pricing + vision agent."""
+    """3-node LangGraph agent for vision → tools → pricing."""
 
     def __init__(self, model_name: str = "gpt-4o-mini"):
-        self.model = ChatOpenAI(model=model_name, temperature=0.2, streaming=False)
+        self.model = ChatOpenAI(model=model_name, temperature=0.2)
+        self.vision_model = ChatOpenAI(model=model_name, temperature=0.2).with_structured_output(VisionOutput)
         self.tools = pricing_tools
         self.tool_node = ToolNode(self.tools)
         self.graph = self._create_graph()
         logger.info(f"[PricingAgent] Initialized with model {model_name}")
 
     # -----------------------------------------------------------------
-    # Graph setup
-    # -----------------------------------------------------------------
     def _create_graph(self) -> StateGraph:
-        workflow = StateGraph(PricingAgentState)
-        workflow.add_node("agent", self._agent_node)
-        workflow.set_entry_point("agent")
-        workflow.add_edge("agent", END)
-        return workflow.compile()
+        g = StateGraph(PricingAgentState)
+        g.add_node("vision_agent", self._vision_node)
+        g.add_node("tools", self.tool_node)
+        g.add_node("pricing_agent", self._pricing_node)
+        g.set_entry_point("vision_agent")
+        g.add_edge("vision_agent", "tools")
+        g.add_edge("tools", "pricing_agent")
+        g.add_edge("pricing_agent", END)
+        return g.compile()
 
     # -----------------------------------------------------------------
-    # Agent core
+    def _vision_node(self, state: PricingAgentState) -> Dict[str, Any]:
+        item_type = state.get("current_item", {}).get("type", "item")
+
+        vision_prompt = f"""
+You are an expert at identifying collectibles from images.
+Describe the following {item_type} with structured detail:
+- title
+- issue number (if applicable)
+- publisher or brand
+- condition (mint, near mint, etc.)
+- notable attributes (variant, first appearance, holofoil, etc.)
+Also include a short raw_summary of what you see.
+"""
+        messages = [SystemMessage(content=vision_prompt)] + state["messages"]
+
+        try:
+            vision_output: VisionOutput = self.vision_model.invoke(messages)
+            ai_msg = AIMessage(content=f"Structured vision output: {vision_output.model_dump_json(indent=2)}")
+        except Exception as e:
+            logger.error(f"[VisionNode] ❌ Vision structured output failed: {e}")
+            response = self.model.invoke(messages)
+            ai_msg = AIMessage(content=getattr(response, "content", "").strip())
+            vision_output = None
+
+        if vision_output:
+            current_item = {
+                "type": item_type,
+                "title": vision_output.title,
+                "issue_number": vision_output.issue_number,
+                "publisher": vision_output.publisher,
+                "condition": vision_output.condition,
+                "attributes": vision_output.notable_attributes,
+                "vision_summary": vision_output.raw_summary or vision_output.model_dump_json(indent=2),
+            }
+        else:
+            current_item = {"type": item_type, "vision_summary": ai_msg.content}
+
+        logger.info(f"[VisionNode] ✅ Structured output:\n{ai_msg.content}")
+
+        return {
+            "messages": state["messages"] + [ai_msg],
+            "session_id": state["session_id"],
+            "user_id": state["user_id"],
+            "current_item": current_item,
+        }
+
     # -----------------------------------------------------------------
-    def _agent_node(self, state: PricingAgentState) -> Dict[str, Any]:
-        """Run a single reasoning step for pricing and recognition."""
-        messages = [self._create_system_message(state)] + state["messages"]
+    def _pricing_node(self, state: PricingAgentState) -> Dict[str, Any]:
+        type_ = state.get("current_item", {}).get("type", "anything").lower()
+        structure = get_schema(type_)
+        tool_data = state.get("tool_results", {}) or {}
+        current_item = state.get("current_item", {}) or {}
+
+        logger.info(f"[PricingNode] 🔧 Received tool data: {json.dumps(tool_data, indent=2)}")
+
+        # optional eBay lookup
+        if not tool_data and search_ebay:
+            title_guess = f"{current_item.get('title','')} {current_item.get('issue_number','')}".strip()
+            logger.info(f"[PricingNode] ⚙️ Running sequential eBay lookup for '{title_guess}'")
+
+            async def _lookup():
+                try:
+                    return await search_ebay.ainvoke({"query": title_guess})
+                except Exception as e:
+                    logger.error(f"[PricingNode] ❌ Manual eBay fallback failed: {e}")
+                    return {}
+
+            try:
+                loop = asyncio.get_event_loop()
+                ebay_result = loop.run_until_complete(_lookup())
+                if ebay_result:
+                    tool_data["eBay"] = ebay_result
+            except Exception as e:
+                logger.error(f"[PricingNode] ❌ eBay lookup failed to complete: {e}")
+
+        context = "You are an expert appraiser."
+        if type_ == "comic":
+            context = "You are an expert in comic book pricing; include 3 concise bullets."
+        elif type_ == "card":
+            context = "You are an expert in trading card valuation; include 2 concise bullets."
+        elif type_ == "record":
+            context = "You are an expert in vinyl records; include label, pressing, year."
+
+        market_context = ""
+        if "eBay" in tool_data:
+            eb = tool_data["eBay"]
+            median, avg, count = eb.get("median_price"), eb.get("average_price"), eb.get("sample_count")
+            if median or avg:
+                market_context = f"\n\nMarket data: eBay median ${median or '?'} (avg ${avg or '?'}) from {count or '?'} listings."
+
+        pricing_prompt = f"""
+You have recognition data and market tool results.
+
+Recognition data:
+{json.dumps(current_item, indent=2)}
+
+Tool data:
+{json.dumps(tool_data, indent=2)}
+
+Output ONLY valid JSON using this schema:
+{json.dumps(structure, indent=2)}
+
+Rules:
+- Fill all fields.
+- Base_Price = tool median or lowest.
+- Price includes markup for condition.
+- Include reasoning in 'AI Notes'.
+{market_context}
+{context}
+"""
+        messages = [SystemMessage(content=pricing_prompt)] + state["messages"]
         response = self.model.invoke(messages)
+        content = re.sub(r"^```(?:json)?|```$", "", getattr(response, "content", "").strip(), flags=re.MULTILINE)
+        try:
+            parsed = json.loads(content)
+        except Exception:
+            parsed = {"Title_Issue": "Unrecognized item", "AI Notes": content}
+
+        logger.info(f"[PricingNode] 🧾 Final JSON output: {parsed}")
         return {
             "messages": [response],
             "session_id": state["session_id"],
             "user_id": state["user_id"],
+            "pricing_result": parsed,
+            "tool_results": tool_data,
         }
 
-    # -----------------------------------------------------------------
-    # System Prompt — dynamically built per schema type
-    # -----------------------------------------------------------------
-    def _create_system_message(self, state: PricingAgentState) -> SystemMessage:
-        """Full descriptive system prompt for image + pricing reasoning."""
-        type_ = state.get("current_item", {}).get("type", "anything").lower()
-        structure = get_schema(type_)
-
-        # Tailored item-type context
-        if type_ == "comic":
-            context = """
-You are an expert in comic book identification and pricing.
-- Detect title, issue number, publisher, and key visual features.
-- Identify special factors: first appearances, variant covers, etc.
-- Output "Title_Issue" instead of "Title".
-- Always include "Publisher" and "Base_Price" even if blank.
-- Include 3 concise sales bullets.
-- Condition: mint, near mint, very fine, fine, good.
-- Base pricing on eBay sold listings and collector market; round UP. Minimum $4.
-"""
-        elif type_ == "card":
-            context = """
-You are an expert in collectible trading cards.
-- Detect title, card number, set name, rarity, holo type, and year.
-- Include 2 concise sales bullets.
-- Condition: mint, near mint, lightly played, moderately played, heavily played.
-- Price based on eBay or TCGPlayer; round UP. Minimum $1.
-"""
-        elif type_ == "record":
-            context = """
-You are an expert in vinyl records and Discogs pricing.
-- Identify title, artist, label, year, genre, and condition.
-- Base pricing on Discogs/eBay sold data; round UP. Minimum $4.
-"""
-        else:
-            context = """
-You are an expert in collectible and vintage goods.
-- Identify item type, material, markings, and short appealing description.
-- Include 2–3 short sales bullets.
-- Price for antique booth or online resale; round UP. Minimum $3.
-"""
-
-        # Structured system prompt
-        full_prompt = f"""
-You are a collectibles cataloging and pricing AI.
-Analyze the provided image of a {type_}, reason about its market value,
-and output ONLY valid JSON in the following structure:
-
-{json.dumps(structure, indent=2)}
-
-Rules:
-- Always fill every key (use empty string if unknown).
-- Do NOT include any markdown or commentary outside the JSON.
-- Always include reasoning in "AI Notes".
-- Round all prices UP to the nearest dollar.
-{context}
-"""
-        return SystemMessage(content=full_prompt)
-
-    # -----------------------------------------------------------------
-    # Session Helpers
     # -----------------------------------------------------------------
     def create_session(self, user_id: str, session_name: Optional[str] = None) -> int:
         db = get_db_session()
@@ -153,12 +225,9 @@ Rules:
             db.close()
 
     # -----------------------------------------------------------------
-    # Unified Vision + Reasoning Entry
-    # -----------------------------------------------------------------
     def price_item_from_image(self, user_id: str, image_bytes: bytes, item_type: str) -> Dict[str, Any]:
-        """Main entry — analyzes image and returns structured pricing."""
+        """Runs full recognition → tool lookup → pricing reasoning."""
         try:
-            # --- Prepare image ---
             image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
             image.thumbnail((1024, 1024))
             buf = io.BytesIO()
@@ -166,8 +235,6 @@ Rules:
             image_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
 
             session_id = self.get_or_create_session(user_id)
-
-            # --- Construct message list ---
             messages = [
                 HumanMessage(
                     content=[
@@ -184,30 +251,12 @@ Rules:
                 "current_item": {"type": item_type},
             }
 
-            # --- Invoke graph ---
             result = self.graph.invoke(state)
-            final_message = result.get("messages", [])[-1]
-            content = getattr(final_message, "content", None)
+            parsed = result.get("pricing_result", {})
+            tool_data = result.get("tool_results", {})
 
-            # --- Parse structured JSON ---
-            parsed = {}
-            if isinstance(content, str):
-                try:
-                    parsed = json.loads(content)
-                except Exception:
-                    parsed = {"Title_Issue": "Unrecognized item", "AI Notes": content}
-            elif isinstance(content, list):
-                # Handle OpenAI multi-part outputs
-                for part in content:
-                    if isinstance(part, str) and part.strip().startswith("{"):
-                        try:
-                            parsed = json.loads(part)
-                            break
-                        except Exception:
-                            continue
-
-            logger.info(f"[PricingAgent] Parsed JSON result: {parsed}")
-            return {"success": True, "pricing_result": parsed, "session_id": session_id}
+            logger.info(f"[PricingAgent] ✅ Full pipeline complete.")
+            return {"success": True, "pricing_result": parsed, "tool_results": tool_data, "session_id": session_id}
 
         except Exception as e:
             logger.error(f"[PricingAgent] Error in price_item_from_image: {e}")
