@@ -1,9 +1,10 @@
 """
-LangGraph Pricing Agent — full 3-stage reasoning and pricing pipeline with structured vision output.
+LangGraph Pricing Agent — 4-stage pipeline with structured vision output and intelligent tool selection.
 ---------------------------------------------------------------------------------------
 1. Vision Node → identifies item from image (structured with Pydantic)
-2. Tool Node → runs eBay or other market lookups
-3. Pricing Node → merges recognition + tool data into structured JSON
+2. Market Node → decides which tools to call (eBay, Discogs, etc.)
+3. Tool Node → executes selected tools
+4. Pricing Node → merges recognition + tool data into structured JSON
 """
 
 import base64, io, json, operator, re, asyncio, nest_asyncio
@@ -31,6 +32,7 @@ except Exception:
 
 logger = get_logger(__name__)
 
+
 # ---------------------------------------------------------------------
 # Structured Vision Output
 # ---------------------------------------------------------------------
@@ -42,6 +44,9 @@ class VisionOutput(BaseModel):
     notable_attributes: List[str] = []
     raw_summary: Optional[str] = None
 
+
+# ---------------------------------------------------------------------
+# LangGraph State
 # ---------------------------------------------------------------------
 class PricingAgentState(TypedDict):
     messages: Annotated[List, operator.add]
@@ -51,9 +56,12 @@ class PricingAgentState(TypedDict):
     pricing_result: Optional[Dict[str, Any]]
     tool_results: Optional[Dict[str, Any]]
 
+
+# ---------------------------------------------------------------------
+# PricingAgent
 # ---------------------------------------------------------------------
 class PricingAgent:
-    """3-node LangGraph agent for vision → tools → pricing."""
+    """4-node LangGraph agent for vision → market → tools → pricing."""
 
     def __init__(self, model_name: str = "gpt-4o-mini"):
         self.model = ChatOpenAI(model=model_name, temperature=0.2)
@@ -67,14 +75,18 @@ class PricingAgent:
     def _create_graph(self) -> StateGraph:
         g = StateGraph(PricingAgentState)
         g.add_node("vision_agent", self._vision_node)
+        g.add_node("market_agent", self._market_node)
         g.add_node("tools", self.tool_node)
         g.add_node("pricing_agent", self._pricing_node)
         g.set_entry_point("vision_agent")
-        g.add_edge("vision_agent", "tools")
+        g.add_edge("vision_agent", "market_agent")
+        g.add_edge("market_agent", "tools")
         g.add_edge("tools", "pricing_agent")
         g.add_edge("pricing_agent", END)
         return g.compile()
 
+    # -----------------------------------------------------------------
+    # Vision Node
     # -----------------------------------------------------------------
     def _vision_node(self, state: PricingAgentState) -> Dict[str, Any]:
         item_type = state.get("current_item", {}).get("type", "item")
@@ -123,6 +135,58 @@ Also include a short raw_summary of what you see.
         }
 
     # -----------------------------------------------------------------
+    # Market Node (decides which tools to use)
+    # -----------------------------------------------------------------
+    def _market_node(self, state: PricingAgentState) -> Dict[str, Any]:
+        current_item = state.get("current_item", {}) or {}
+        title = current_item.get("title", "")
+        issue = current_item.get("issue_number", "")
+        condition = current_item.get("condition", "")
+        attributes = ", ".join(current_item.get("attributes", []))
+
+        market_prompt = f"""
+You are the market intelligence model for collectibles.
+Based on the following item info, decide which pricing data tools to use.
+Item: "{title} {issue}" ({condition}) [{attributes}]
+Respond ONLY with tool call syntax, e.g.:
+search_ebay("Amazing Spider-Man #31 Near Mint variant cover")
+You may chain multiple tools by listing them, one per line.
+"""
+
+        response = self.model.invoke([SystemMessage(content=market_prompt)])
+        logger.info(f"[MarketNode] 🧠 Tool decision message: {response}")
+
+        tool_calls = []
+        if hasattr(response, "tool_calls") and response.tool_calls:
+            tool_calls = response.tool_calls
+        else:
+            text = getattr(response, "content", "").strip()
+            matches = re.findall(r"(\w+)\((?:\"|')?([^\"'\)]+)(?:\"|')?\)", text)
+            if matches:
+                for name, query in matches:
+                    tool_calls.append({"name": name, "args": {"query": query}})
+            else:
+                query = f"{title} {issue} {condition} {attributes}".strip()
+                tool_calls = [{"name": "search_ebay", "args": {"query": query}}]
+
+        # Add unique IDs (required by ToolNode)
+        for i, t in enumerate(tool_calls, start=1):
+            if "id" not in t:
+                t["id"] = f"toolu_{i}"
+
+        response.tool_calls = tool_calls
+        logger.info(f"[MarketNode] 🧩 Normalized tool calls with IDs: {json.dumps(tool_calls, indent=2)}")
+
+        return {
+            "messages": state["messages"] + [response],
+            "session_id": state["session_id"],
+            "user_id": state["user_id"],
+            "current_item": current_item,
+        }
+
+    # -----------------------------------------------------------------
+    # Pricing Node (final reasoning & JSON output)
+    # -----------------------------------------------------------------
     def _pricing_node(self, state: PricingAgentState) -> Dict[str, Any]:
         type_ = state.get("current_item", {}).get("type", "anything").lower()
         structure = get_schema(type_)
@@ -131,26 +195,7 @@ Also include a short raw_summary of what you see.
 
         logger.info(f"[PricingNode] 🔧 Received tool data: {json.dumps(tool_data, indent=2)}")
 
-        # optional eBay lookup
-        if not tool_data and search_ebay:
-            title_guess = f"{current_item.get('title','')} {current_item.get('issue_number','')}".strip()
-            logger.info(f"[PricingNode] ⚙️ Running sequential eBay lookup for '{title_guess}'")
-
-            async def _lookup():
-                try:
-                    return await search_ebay.ainvoke({"query": title_guess})
-                except Exception as e:
-                    logger.error(f"[PricingNode] ❌ Manual eBay fallback failed: {e}")
-                    return {}
-
-            try:
-                loop = asyncio.get_event_loop()
-                ebay_result = loop.run_until_complete(_lookup())
-                if ebay_result:
-                    tool_data["eBay"] = ebay_result
-            except Exception as e:
-                logger.error(f"[PricingNode] ❌ eBay lookup failed to complete: {e}")
-
+        # Context and rules
         context = "You are an expert appraiser."
         if type_ == "comic":
             context = "You are an expert in comic book pricing; include 3 concise bullets."
@@ -183,15 +228,27 @@ Rules:
 - Base_Price = tool median or lowest.
 - Price includes markup for condition.
 - Include reasoning in 'AI Notes'.
+- Do not include commentary or introductions before or after JSON.
 {market_context}
 {context}
 """
+
         messages = [SystemMessage(content=pricing_prompt)] + state["messages"]
         response = self.model.invoke(messages)
-        content = re.sub(r"^```(?:json)?|```$", "", getattr(response, "content", "").strip(), flags=re.MULTILINE)
+        content = getattr(response, "content", "").strip()
+
+        # 🧼 Clean markdown fences and stray text
+        content = re.sub(r"^```(?:json)?|```$", "", content, flags=re.MULTILINE).strip()
+
+        # 🧩 Extract inner JSON if wrapped in prose
+        match = re.search(r"\{.*\}", content, re.DOTALL)
+        if match:
+            content = match.group(0)
+
         try:
             parsed = json.loads(content)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"[PricingNode] ⚠️ Could not parse JSON directly: {e}")
             parsed = {"Title_Issue": "Unrecognized item", "AI Notes": content}
 
         logger.info(f"[PricingNode] 🧾 Final JSON output: {parsed}")
@@ -203,6 +260,8 @@ Rules:
             "tool_results": tool_data,
         }
 
+    # -----------------------------------------------------------------
+    # Session Helpers
     # -----------------------------------------------------------------
     def create_session(self, user_id: str, session_name: Optional[str] = None) -> int:
         db = get_db_session()
@@ -225,8 +284,10 @@ Rules:
             db.close()
 
     # -----------------------------------------------------------------
+    # Entry Point
+    # -----------------------------------------------------------------
     def price_item_from_image(self, user_id: str, image_bytes: bytes, item_type: str) -> Dict[str, Any]:
-        """Runs full recognition → tool lookup → pricing reasoning."""
+        """Runs full recognition → market decision → tool lookup → pricing reasoning."""
         try:
             image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
             image.thumbnail((1024, 1024))
@@ -239,7 +300,7 @@ Rules:
                 HumanMessage(
                     content=[
                         {"type": "text", "text": f"Please analyze and price this {item_type}."},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
                     ]
                 )
             ]
