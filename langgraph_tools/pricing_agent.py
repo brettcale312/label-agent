@@ -19,17 +19,11 @@ from langchain_openai import ChatOpenAI
 
 from database.connection import get_db_session
 from database.operations import PricingSessionOps
-from langgraph_tools.pricing_tools import pricing_tools
+from pricing_tools.search_registry import ALL_SEARCH_TOOLS
 from schemas.pricing_schemas import get_schema
 from utils.logger import get_logger
 
 nest_asyncio.apply()
-
-try:
-    from pricing_tools.ebay import search_ebay
-except Exception:
-    search_ebay = None
-
 logger = get_logger(__name__)
 
 
@@ -66,17 +60,53 @@ class PricingAgent:
     def __init__(self, model_name: str = "gpt-4o-mini"):
         self.model = ChatOpenAI(model=model_name, temperature=0.2)
         self.vision_model = ChatOpenAI(model=model_name, temperature=0.2).with_structured_output(VisionOutput)
-        self.tools = pricing_tools
+        self.tools = ALL_SEARCH_TOOLS
         self.tool_node = ToolNode(self.tools)
         self.graph = self._create_graph()
-        logger.info(f"[PricingAgent] Initialized with model {model_name}")
+        logger.info(f"[PricingAgent] Initialized with model {model_name} and {len(self.tools)} tools: {[t.name for t in self.tools]}")
 
     # -----------------------------------------------------------------
     def _create_graph(self) -> StateGraph:
         g = StateGraph(PricingAgentState)
         g.add_node("vision_agent", self._vision_node)
         g.add_node("market_agent", self._market_node)
-        g.add_node("tools", self.tool_node)
+
+        async def _tool_wrapper(state: PricingAgentState) -> Dict[str, Any]:
+            """Executes selected tools and maps results to tool_call_ids."""
+            tool_calls = []
+            for msg in state["messages"]:
+                if hasattr(msg, "tool_calls") and msg.tool_calls:
+                    tool_calls.extend(msg.tool_calls)
+
+            result = await self.tool_node.ainvoke(state)
+            tool_outputs = result.get("tool_outputs", {}) or {}
+
+            id_map: Dict[str, Any] = {}
+            for i, tcall in enumerate(tool_calls):
+                tool_name = tcall.get("name")
+                tool_id = tcall.get("id")
+                if isinstance(tool_outputs, list):
+                    data = tool_outputs[i] if i < len(tool_outputs) else None
+                else:
+                    data = tool_outputs.get(tool_name)
+                if not data:
+                    data = {
+                        "status": "no_data",
+                        "message": f"{tool_name} returned no results or failed."
+                    }
+                id_map[tool_id] = data
+
+            logger.info(f"[ToolNode] ✅ Executed tools, mapped {len(id_map)} tool results to IDs")
+
+            return {
+                "messages": state["messages"],
+                "session_id": state["session_id"],
+                "user_id": state["user_id"],
+                "current_item": state.get("current_item"),
+                "tool_results": id_map,
+            }
+
+        g.add_node("tools", _tool_wrapper)
         g.add_node("pricing_agent", self._pricing_node)
         g.set_entry_point("vision_agent")
         g.add_edge("vision_agent", "market_agent")
@@ -90,7 +120,6 @@ class PricingAgent:
     # -----------------------------------------------------------------
     def _vision_node(self, state: PricingAgentState) -> Dict[str, Any]:
         item_type = state.get("current_item", {}).get("type", "item")
-
         vision_prompt = f"""
 You are an expert at identifying collectibles from images.
 Describe the following {item_type} with structured detail:
@@ -102,7 +131,6 @@ Describe the following {item_type} with structured detail:
 Also include a short raw_summary of what you see.
 """
         messages = [SystemMessage(content=vision_prompt)] + state["messages"]
-
         try:
             vision_output: VisionOutput = self.vision_model.invoke(messages)
             ai_msg = AIMessage(content=f"Structured vision output: {vision_output.model_dump_json(indent=2)}")
@@ -126,7 +154,6 @@ Also include a short raw_summary of what you see.
             current_item = {"type": item_type, "vision_summary": ai_msg.content}
 
         logger.info(f"[VisionNode] ✅ Structured output:\n{ai_msg.content}")
-
         return {
             "messages": state["messages"] + [ai_msg],
             "session_id": state["session_id"],
@@ -135,7 +162,7 @@ Also include a short raw_summary of what you see.
         }
 
     # -----------------------------------------------------------------
-    # Market Node (decides which tools to use)
+    # Market Node
     # -----------------------------------------------------------------
     def _market_node(self, state: PricingAgentState) -> Dict[str, Any]:
         current_item = state.get("current_item", {}) or {}
@@ -148,11 +175,14 @@ Also include a short raw_summary of what you see.
 You are the market intelligence model for collectibles.
 Based on the following item info, decide which pricing data tools to use.
 Item: "{title} {issue}" ({condition}) [{attributes}]
-Respond ONLY with tool call syntax, e.g.:
-search_ebay("Amazing Spider-Man #31 Near Mint variant cover")
-You may chain multiple tools by listing them, one per line.
-"""
 
+Available tools:
+search_ebay, search_heritage, search_comicbookrealm, search_gocollect, smart_search
+
+Respond ONLY with valid tool call syntax, one per line:
+search_ebay("Amazing Spider-Man #31 Near Mint variant cover")
+search_gocollect("Amazing Spider-Man #31 Near Mint variant cover")
+"""
         response = self.model.invoke([SystemMessage(content=market_prompt)])
         logger.info(f"[MarketNode] 🧠 Tool decision message: {response}")
 
@@ -169,10 +199,8 @@ You may chain multiple tools by listing them, one per line.
                 query = f"{title} {issue} {condition} {attributes}".strip()
                 tool_calls = [{"name": "search_ebay", "args": {"query": query}}]
 
-        # Add unique IDs (required by ToolNode)
         for i, t in enumerate(tool_calls, start=1):
-            if "id" not in t:
-                t["id"] = f"toolu_{i}"
+            t.setdefault("id", f"toolu_{i}")
 
         response.tool_calls = tool_calls
         logger.info(f"[MarketNode] 🧩 Normalized tool calls with IDs: {json.dumps(tool_calls, indent=2)}")
@@ -185,7 +213,7 @@ You may chain multiple tools by listing them, one per line.
         }
 
     # -----------------------------------------------------------------
-    # Pricing Node (final reasoning & JSON output)
+    # Pricing Node (FINAL FIXED)
     # -----------------------------------------------------------------
     def _pricing_node(self, state: PricingAgentState) -> Dict[str, Any]:
         type_ = state.get("current_item", {}).get("type", "anything").lower()
@@ -195,7 +223,47 @@ You may chain multiple tools by listing them, one per line.
 
         logger.info(f"[PricingNode] 🔧 Received tool data: {json.dumps(tool_data, indent=2)}")
 
-        # Context and rules
+        # Find the last AIMessage with tool_calls
+        last_tool_msg = None
+        for msg in reversed(state["messages"]):
+            if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+                last_tool_msg = msg
+                break
+
+        # --- proper OpenAI tool messages ---
+        tool_messages = []
+        for tool_id, result in tool_data.items():
+            tool_messages.append({
+                "role": "tool",
+                "tool_call_id": tool_id,
+                "content": json.dumps(result, indent=2)
+            })
+
+        # --- Rebuild a clean conversation sequence ---
+        clean_messages = []
+        clean_messages.append(SystemMessage(content="You are a pricing agent synthesizing tool data and visual recognition."))
+        # Only the original first human input
+        first_human = next((m for m in state["messages"] if isinstance(m, HumanMessage)), None)
+        if first_human:
+            clean_messages.append(first_human)
+        if last_tool_msg:
+            clean_messages.append(last_tool_msg)
+        for tm in tool_messages:
+            clean_messages.append(tm)
+
+        # --- Diagnostic logging ---
+        seq = []
+        for m in clean_messages:
+            if hasattr(m, "role"):
+                seq.append(m.role)
+            elif isinstance(m, dict):
+                seq.append(m.get("role", "?"))
+            else:
+                seq.append(type(m).__name__)
+
+        logger.info(f"[PricingNode] 🧩 Message order before invoke: {seq}")
+
+        # --- pricing reasoning prompt ---
         context = "You are an expert appraiser."
         if type_ == "comic":
             context = "You are an expert in comic book pricing; include 3 concise bullets."
@@ -203,13 +271,6 @@ You may chain multiple tools by listing them, one per line.
             context = "You are an expert in trading card valuation; include 2 concise bullets."
         elif type_ == "record":
             context = "You are an expert in vinyl records; include label, pressing, year."
-
-        market_context = ""
-        if "eBay" in tool_data:
-            eb = tool_data["eBay"]
-            median, avg, count = eb.get("median_price"), eb.get("average_price"), eb.get("sample_count")
-            if median or avg:
-                market_context = f"\n\nMarket data: eBay median ${median or '?'} (avg ${avg or '?'}) from {count or '?'} listings."
 
         pricing_prompt = f"""
 You have recognition data and market tool results.
@@ -229,18 +290,13 @@ Rules:
 - Price includes markup for condition.
 - Include reasoning in 'AI Notes'.
 - Do not include commentary or introductions before or after JSON.
-{market_context}
 {context}
 """
+        clean_messages.append(SystemMessage(content=pricing_prompt))
 
-        messages = [SystemMessage(content=pricing_prompt)] + state["messages"]
-        response = self.model.invoke(messages)
+        response = self.model.invoke(clean_messages)
         content = getattr(response, "content", "").strip()
-
-        # 🧼 Clean markdown fences and stray text
         content = re.sub(r"^```(?:json)?|```$", "", content, flags=re.MULTILINE).strip()
-
-        # 🧩 Extract inner JSON if wrapped in prose
         match = re.search(r"\{.*\}", content, re.DOTALL)
         if match:
             content = match.group(0)
@@ -261,7 +317,7 @@ Rules:
         }
 
     # -----------------------------------------------------------------
-    # Session Helpers
+    # Session helpers
     # -----------------------------------------------------------------
     def create_session(self, user_id: str, session_name: Optional[str] = None) -> int:
         db = get_db_session()
@@ -284,8 +340,6 @@ Rules:
             db.close()
 
     # -----------------------------------------------------------------
-    # Entry Point
-    # -----------------------------------------------------------------
     def price_item_from_image(self, user_id: str, image_bytes: bytes, item_type: str) -> Dict[str, Any]:
         """Runs full recognition → market decision → tool lookup → pricing reasoning."""
         try:
@@ -304,7 +358,6 @@ Rules:
                     ]
                 )
             ]
-
             state = {
                 "messages": messages,
                 "session_id": session_id,
@@ -312,7 +365,7 @@ Rules:
                 "current_item": {"type": item_type},
             }
 
-            result = self.graph.invoke(state)
+            result = asyncio.run(self.graph.ainvoke(state))
             parsed = result.get("pricing_result", {})
             tool_data = result.get("tool_results", {})
 
