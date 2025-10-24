@@ -24,8 +24,8 @@ from pricing_tools.smart_search import smart_search
 # The unified tool list the agent can use
 ALL_SEARCH_TOOLS = [
     search_ebay,
-    search_heritage,
-    search_comicbookrealm,
-    search_gocollect,
-    smart_search,
+    # search_heritage,
+    # search_comicbookrealm,
+    # search_gocollect,
+    # smart_search,
 ]

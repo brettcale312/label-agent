@@ -78,32 +78,43 @@ class PricingAgent:
                 if hasattr(msg, "tool_calls") and msg.tool_calls:
                     tool_calls.extend(msg.tool_calls)
 
-            result = await self.tool_node.ainvoke(state)
-            tool_outputs = result.get("tool_outputs", {}) or {}
+            tool_outputs: Dict[str, Any] = {}
 
-            id_map: Dict[str, Any] = {}
-            for i, tcall in enumerate(tool_calls):
+            for tcall in tool_calls:
                 tool_name = tcall.get("name")
+                tool_args = tcall.get("args", {})
                 tool_id = tcall.get("id")
-                if isinstance(tool_outputs, list):
-                    data = tool_outputs[i] if i < len(tool_outputs) else None
-                else:
-                    data = tool_outputs.get(tool_name)
-                if not data:
-                    data = {
-                        "status": "no_data",
-                        "message": f"{tool_name} returned no results or failed."
-                    }
-                id_map[tool_id] = data
 
-            logger.info(f"[ToolNode] ✅ Executed tools, mapped {len(id_map)} tool results to IDs")
+                tool_func = next((t for t in self.tools if t.name == tool_name), None)
+                if not tool_func:
+                    logger.warning(f"[ToolNode] ⚠️ Tool {tool_name} not found in registry.")
+                    tool_outputs[tool_id] = {"status": "missing", "message": f"Tool {tool_name} not found."}
+                    continue
 
+                try:
+                    # Proper StructuredTool invocation
+                    if hasattr(tool_func, "arun"):
+                        result = await tool_func.arun(tool_args)
+                    elif hasattr(tool_func, "run"):
+                        result = tool_func.run(tool_args)
+                    else:
+                        logger.warning(f"[ToolNode] ⚠️ Tool {tool_name} has no run/arun method.")
+                        result = None
+
+                    logger.info(f"[ToolNode] ✅ Tool {tool_name} returned: {result}")
+                    tool_outputs[tool_id] = result or {"status": "empty", "message": "No data returned."}
+
+                except Exception as e:
+                    logger.exception(f"[ToolNode] ❌ Tool {tool_name} failed: {e}")
+                    tool_outputs[tool_id] = {"status": "error", "message": str(e)}
+
+            logger.info(f"[ToolNode] ✅ Executed {len(tool_outputs)} tools, mapped results to IDs")
             return {
                 "messages": state["messages"],
                 "session_id": state["session_id"],
                 "user_id": state["user_id"],
                 "current_item": state.get("current_item"),
-                "tool_results": id_map,
+                "tool_results": tool_outputs,
             }
 
         g.add_node("tools", _tool_wrapper)
@@ -177,12 +188,14 @@ Based on the following item info, decide which pricing data tools to use.
 Item: "{title} {issue}" ({condition}) [{attributes}]
 
 Available tools:
-search_ebay, search_heritage, search_comicbookrealm, search_gocollect, smart_search
+search_ebay
 
 Respond ONLY with valid tool call syntax, one per line:
 search_ebay("Amazing Spider-Man #31 Near Mint variant cover")
-search_gocollect("Amazing Spider-Man #31 Near Mint variant cover")
+
 """
+#,search_heritage, search_comicbookrealm, search_gocollect, smart_search
+#search_gocollect("Amazing Spider-Man #31 Near Mint variant cover")
         response = self.model.invoke([SystemMessage(content=market_prompt)])
         logger.info(f"[MarketNode] 🧠 Tool decision message: {response}")
 
@@ -212,8 +225,8 @@ search_gocollect("Amazing Spider-Man #31 Near Mint variant cover")
             "current_item": current_item,
         }
 
-    # -----------------------------------------------------------------
-    # Pricing Node (FINAL FIXED)
+        # -----------------------------------------------------------------
+    # Pricing Node (FINAL VERSION with Base_Price injection)
     # -----------------------------------------------------------------
     def _pricing_node(self, state: PricingAgentState) -> Dict[str, Any]:
         type_ = state.get("current_item", {}).get("type", "anything").lower()
@@ -223,14 +236,14 @@ search_gocollect("Amazing Spider-Man #31 Near Mint variant cover")
 
         logger.info(f"[PricingNode] 🔧 Received tool data: {json.dumps(tool_data, indent=2)}")
 
-        # Find the last AIMessage with tool_calls
+        # Find the last AIMessage with tool_calls (the model that triggered the tools)
         last_tool_msg = None
         for msg in reversed(state["messages"]):
             if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
                 last_tool_msg = msg
                 break
 
-        # --- proper OpenAI tool messages ---
+        # --- Convert tool_data into proper OpenAI tool messages ---
         tool_messages = []
         for tool_id, result in tool_data.items():
             tool_messages.append({
@@ -239,10 +252,9 @@ search_gocollect("Amazing Spider-Man #31 Near Mint variant cover")
                 "content": json.dumps(result, indent=2)
             })
 
-        # --- Rebuild a clean conversation sequence ---
+        # --- Build a clean, valid message chain ---
         clean_messages = []
-        clean_messages.append(SystemMessage(content="You are a pricing agent synthesizing tool data and visual recognition."))
-        # Only the original first human input
+        clean_messages.append(SystemMessage(content="You are a pricing agent synthesizing tool data and vision recognition results."))
         first_human = next((m for m in state["messages"] if isinstance(m, HumanMessage)), None)
         if first_human:
             clean_messages.append(first_human)
@@ -251,7 +263,28 @@ search_gocollect("Amazing Spider-Man #31 Near Mint variant cover")
         for tm in tool_messages:
             clean_messages.append(tm)
 
-        # --- Diagnostic logging ---
+        # --- Try to derive a Base_Price from any tool output ---
+        base_price = None
+        for k, v in tool_data.items():
+            if isinstance(v, dict):
+                # Search for numeric-looking values in tool outputs
+                for key, val in v.items():
+                    if isinstance(val, (int, float)) and val > 0:
+                        base_price = val
+                        break
+                    elif isinstance(val, str) and val.replace('.', '', 1).isdigit():
+                        base_price = float(val)
+                        break
+            elif isinstance(v, (int, float)) and v > 0:
+                base_price = v
+
+        if base_price:
+            current_item["Base_Price"] = base_price
+            logger.info(f"[PricingNode] 💵 Injected Base_Price from tools: {base_price}")
+        else:
+            logger.info("[PricingNode] ⚠️ No numeric Base_Price detected in tool results.")
+
+        # --- Diagnostic log of message order ---
         seq = []
         for m in clean_messages:
             if hasattr(m, "role"):
@@ -260,17 +293,16 @@ search_gocollect("Amazing Spider-Man #31 Near Mint variant cover")
                 seq.append(m.get("role", "?"))
             else:
                 seq.append(type(m).__name__)
-
         logger.info(f"[PricingNode] 🧩 Message order before invoke: {seq}")
 
-        # --- pricing reasoning prompt ---
+        # --- Pricing reasoning prompt ---
         context = "You are an expert appraiser."
         if type_ == "comic":
             context = "You are an expert in comic book pricing; include 3 concise bullets."
         elif type_ == "card":
             context = "You are an expert in trading card valuation; include 2 concise bullets."
         elif type_ == "record":
-            context = "You are an expert in vinyl records; include label, pressing, year."
+            context = "You are an expert in vinyl record valuation; include label, pressing, and year."
 
         pricing_prompt = f"""
 You have recognition data and market tool results.
@@ -294,6 +326,7 @@ Rules:
 """
         clean_messages.append(SystemMessage(content=pricing_prompt))
 
+        # --- Call the model with the cleaned message chain ---
         response = self.model.invoke(clean_messages)
         content = getattr(response, "content", "").strip()
         content = re.sub(r"^```(?:json)?|```$", "", content, flags=re.MULTILINE).strip()
