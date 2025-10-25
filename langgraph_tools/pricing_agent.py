@@ -1,31 +1,13 @@
 """
 LangGraph Pricing Agent — 4-stage pipeline with structured vision output and intelligent tool selection.
 ---------------------------------------------------------------------------------------
-1. Vision Node → identifies item from image (structured with Pydantic)
-2. Market Node → decides which tools to call (eBay, Discogs, etc.)
+1. Vision Node → identifies item from image (structured with JSON, returns category_hint)
+2. Market Node → decides which tools to call (eBay, MyComicShop, etc.)
 3. Tool Node → executes selected tools
-4. Pricing Node → merges recognition + tool data into structured JSON
+4. Pricing Node → merges recognition + tool data into structured JSON, applies artist premiums
 """
 
-import os, shutil, tempfile
-
-# ---------------------------------------------------------------------
-# DEV-MODE CACHE FLUSH
-# ---------------------------------------------------------------------
-if os.getenv("RESET_AGENT_CACHE", "0") == "1":
-    for p in [
-        ".langgraph_cache",
-        ".langchain",
-        os.path.join(tempfile.gettempdir(), "langgraph"),
-        os.path.join(os.getenv("LOCALAPPDATA", ""), "langgraph"),
-    ]:
-        try:
-            if p and os.path.exists(p):
-                shutil.rmtree(p, ignore_errors=True)
-        except Exception:
-            pass
-
-import base64, io, json, operator, re, asyncio, nest_asyncio, logging
+import os, shutil, tempfile, base64, io, json, operator, re, asyncio, nest_asyncio, logging
 from typing import Dict, Any, List, Optional, Annotated
 from PIL import Image
 from langgraph.graph import StateGraph, END
@@ -38,6 +20,7 @@ from langchain_openai import ChatOpenAI
 from database.connection import get_db_session
 from database.operations import PricingSessionOps
 from pricing_tools.search_registry import ALL_SEARCH_TOOLS
+from pricing_tools.valuation_logic import ARTIST_PREMIUMS
 from schemas.pricing_schemas import get_schema
 from utils.logger import get_logger
 
@@ -51,19 +34,17 @@ nest_asyncio.apply()
 logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------
-# Structured Vision Output
+# Vision JSON Schema Output
 # ---------------------------------------------------------------------
 class VisionOutput(BaseModel):
-    title: str = Field(..., description="Title or name of the item.")
+    title: str
     issue_number: Optional[str] = None
     publisher: Optional[str] = None
     condition: Optional[str] = None
     notable_attributes: List[str] = []
     raw_summary: Optional[str] = None
 
-# ---------------------------------------------------------------------
-# LangGraph State
-# ---------------------------------------------------------------------
+
 class PricingAgentState(TypedDict):
     messages: Annotated[List, operator.add]
     session_id: int
@@ -80,85 +61,20 @@ class PricingAgent:
 
     def __init__(self, model_name: str = "gpt-4o-mini"):
         self.model = ChatOpenAI(model=model_name, temperature=0.2)
-        self.vision_model = ChatOpenAI(model=model_name, temperature=0.2).with_structured_output(VisionOutput)
         self.tools = ALL_SEARCH_TOOLS
         self.tool_node = ToolNode(self.tools)
         self.graph = self._create_graph()
-        logger.info(f"[PricingAgent] Initialized with model {model_name} and {len(self.tools)} tools: {[t.name for t in self.tools]}")
+        logger.info(
+            f"[PricingAgent] Initialized with model {model_name} and {len(self.tools)} tools: "
+            f"{[t.name for t in self.tools]}"
+        )
 
     # -----------------------------------------------------------------
     def _create_graph(self) -> StateGraph:
         g = StateGraph(PricingAgentState)
         g.add_node("vision_agent", self._vision_node)
         g.add_node("market_agent", self._market_node)
-        
-        # -----------------------------------------------------------------
-        # TOOL WRAPPER  (clean logging version)
-        # -----------------------------------------------------------------
-        async def _tool_wrapper(state: PricingAgentState) -> Dict[str, Any]:
-            """Executes selected tools and maps results to tool_call_ids with compact logs."""
-            tool_calls = []
-            for msg in state["messages"]:
-                if hasattr(msg, "tool_calls") and msg.tool_calls:
-                    tool_calls.extend(msg.tool_calls)
-
-            tool_outputs: Dict[str, Any] = {}
-
-            for tcall in tool_calls:
-                tool_name = tcall.get("name")
-                tool_args = tcall.get("args", {})
-                tool_id = tcall.get("id")
-                tool_func = next((t for t in self.tools if t.name == tool_name), None)
-
-                if not tool_func:
-                    logger.warning(f"[ToolNode] ⚠️ Tool {tool_name} not found in registry.")
-                    tool_outputs[tool_id] = {"status": "missing"}
-                    continue
-
-                try:
-                    # Run async or sync
-                    if hasattr(tool_func, "arun"):
-                        result = await tool_func.arun(tool_args)
-                    elif hasattr(tool_func, "run"):
-                        result = tool_func.run(tool_args)
-                    else:
-                        logger.warning(f"[ToolNode] ⚠️ Tool {tool_name} has no run/arun method.")
-                        result = None
-
-                    # --- Smart summarized logging ---
-                    if isinstance(result, dict):
-                        src = result.get("source", tool_name)
-                        med = result.get("median_price")
-                        avg = result.get("average_price")
-                        count = result.get("sample_count")
-                        summary = f"[{tool_name}] {src} | median={med} | avg={avg} | samples={count}"
-                        logger.info(summary)
-
-                        # Log a trimmed JSON for file logs only (no console spam)
-                        trimmed = {k: v for k, v in result.items() if k not in ("raw", "items", "raw_prices")}
-                        if logger.handlers:
-                            logger.debug(f"[ToolNode DEBUG] {tool_name} result: {json.dumps(trimmed)[:400]}...")
-
-                    else:
-                        logger.info(f"[{tool_name}] result: {result}")
-
-                    tool_outputs[tool_id] = result or {"status": "empty"}
-
-                except Exception as e:
-                    logger.exception(f"[ToolNode] ❌ {tool_name} failed: {e}")
-                    tool_outputs[tool_id] = {"status": "error", "message": str(e)}
-
-            logger.info(f"[ToolNode] ✅ Executed {len(tool_outputs)} tools")
-            return {
-                "messages": state["messages"],
-                "session_id": state["session_id"],
-                "user_id": state["user_id"],
-                "current_item": state.get("current_item"),
-                "tool_results": tool_outputs,
-            }
-
-
-        g.add_node("tools", _tool_wrapper)
+        g.add_node("tools", self._tool_wrapper)
         g.add_node("pricing_agent", self._pricing_node)
         g.set_entry_point("vision_agent")
         g.add_edge("vision_agent", "market_agent")
@@ -168,60 +84,115 @@ class PricingAgent:
         return g.compile()
 
     # -----------------------------------------------------------------
-    # Vision Node
+    # Vision Node (Advanced Structured)
     # -----------------------------------------------------------------
     def _vision_node(self, state: PricingAgentState) -> Dict[str, Any]:
         item_type = state.get("current_item", {}).get("type", "item")
-        vision_prompt = f"""
-You are an expert at identifying collectibles from images.
-Describe the following {item_type} with structured detail:
-- title
-- issue number
-- publisher or brand
-- condition
-- notable attributes
-Include a short raw_summary.
+
+        detailed_prompt = """
+You are a professional collectibles grader and catalog specialist.
+Examine the image carefully and extract **all visible structured details**.
+Identify the collectible precisely — aim to distinguish between editions, variants, or printings.
+
+Respond in structured JSON with the following fields:
+
+{
+  "item_type": "comic | trading_card | vinyl_record | toy | other",
+  "title": "",
+  "series": "",
+  "issue_number": "",
+  "legacy_number": "",
+  "variant_type": "",
+  "publisher_or_brand": "",
+  "release_year": "",
+  "barcode_or_isbn": "",
+  "cover_artist_or_label": "",
+  "notable_characters": "",
+  "key_issue_details": "",
+  "rarity_or_limited_info": "",
+  "condition_estimate": "",
+  "visual_notes": "",
+  "raw_summary": ""
+}
+
+### Enhanced Comic-Specific Rules ###
+- Detect and output "cover_artist_or_label" (e.g., Rob Liefeld, Alex Ross, J. Scott Campbell).
+- Include any anniversary or event logos (e.g., 50 Years, Fall of X).
+- If a barcode block is visible, extract its numeric code.
+- Estimate release_year from indicia or barcode pattern.
+- Note any visible creator signatures on the cover (e.g., “Liefeld”, “McFarlane”).
+- Grade visible condition cues (spine wear, corner dents, gloss loss).
+
+**For Trading Cards:**
+- Include game/series name, card number, rarity, and edition (1st Edition, Unlimited, Promo).
+- Note holofoil, reverse holo, or alternate art.
+
+**For Vinyl Records:**
+- Include artist, album, label, catalog number, pressing details.
+
+**General Rules:**
+- Include every visible printed code (barcode, catalog, LGY, etc.)
+- Keep `raw_summary` to 2 sentences summarizing what you see.
 """
-        messages = [SystemMessage(content=vision_prompt)] + state["messages"]
+
+        messages = [SystemMessage(content=detailed_prompt)] + state["messages"]
         try:
-            vision_output: VisionOutput = self.vision_model.invoke(messages)
-            ai_msg = AIMessage(content=f"Structured vision output: {vision_output.model_dump_json(indent=2)}")
-        except Exception as e:
-            logger.error(f"[VisionNode] ❌ Vision structured output failed: {e}")
             response = self.model.invoke(messages)
-            ai_msg = AIMessage(content=getattr(response, "content", "").strip())
-            vision_output = None
+            text = getattr(response, "content", "").strip()
+            match = re.search(r"\{.*\}", text, re.DOTALL)
+            vision_data = json.loads(match.group(0)) if match else {"raw_summary": text, "item_type": "unknown"}
 
-        current_item = {"type": item_type}
-        if vision_output:
-            current_item.update({
-                "title": vision_output.title,
-                "issue_number": vision_output.issue_number,
-                "publisher": vision_output.publisher,
-                "condition": vision_output.condition,
-                "attributes": vision_output.notable_attributes,
-                "vision_summary": vision_output.raw_summary or vision_output.model_dump_json(indent=2),
-            })
-        else:
-            current_item["vision_summary"] = ai_msg.content
+            # Determine category hint
+            category_hint = None
+            itype = (vision_data.get("item_type") or "").lower()
+            if itype in ("comic", "comics"):
+                category_hint = "comic"
+            elif itype in ("record", "vinyl", "album", "vinyl_record"):
+                category_hint = "record"
+            elif itype in ("trading_card", "card", "tcg"):
+                category_hint = "card"
 
-        logger.info(f"[VisionNode] ✅ {current_item.get('title','(unknown)')} | {current_item.get('condition','')}")
+            current_item = {
+                "type": item_type,
+                "title": vision_data.get("title"),
+                "issue_number": vision_data.get("issue_number"),
+                "publisher": vision_data.get("publisher_or_brand"),
+                "condition": vision_data.get("condition_estimate"),
+                "attributes": [
+                    vision_data.get("variant_type"),
+                    vision_data.get("legacy_number"),
+                    vision_data.get("key_issue_details"),
+                    vision_data.get("cover_artist_or_label"),
+                ],
+                "vision_summary": vision_data.get("raw_summary"),
+                "category_hint": category_hint,
+            }
+
+            logger.info(
+                f"[VisionNode] ✅ {current_item.get('title')} | {current_item.get('condition')} | "
+                f"Category hint: {category_hint or 'general'}"
+            )
+        except Exception as e:
+            logger.exception(f"[VisionNode] ❌ Vision structured output failed: {e}")
+            current_item = {"type": item_type, "vision_summary": str(e)}
+
         return {
-            "messages": state["messages"] + [ai_msg],
+            "messages": state["messages"] + [AIMessage(content=str(current_item))],
             "session_id": state["session_id"],
             "user_id": state["user_id"],
             "current_item": current_item,
         }
 
     # -----------------------------------------------------------------
-    # Market Node
+    # Market Node (passes category_hint)
     # -----------------------------------------------------------------
     def _market_node(self, state: PricingAgentState) -> Dict[str, Any]:
         current_item = state.get("current_item", {}) or {}
         title = current_item.get("title", "")
         issue = current_item.get("issue_number", "")
         condition = current_item.get("condition", "")
-        attributes = ", ".join(current_item.get("attributes", []))
+        attributes = ", ".join(a for a in current_item.get("attributes", []) if a)
+        category_hint = current_item.get("category_hint")
 
         market_prompt = f"""
 You are the market intelligence model for collectibles.
@@ -229,18 +200,30 @@ Based on the following item info, decide which pricing tools to use.
 Item: "{title} {issue}" ({condition}) [{attributes}]
 
 Available tools:
-search_ebay, search_mycomicshop
+search_ebay, search_mycomicshop, search_discogs
 
 Respond ONLY with tool call syntax, one per line:
 search_ebay("Spider-Man #31 Near Mint variant cover")
 search_mycomicshop("Spider-Man #31 Near Mint variant cover")
+search_discogs("Chicago Transit Authority - Chicago Vinyl Record")
 """
         response = self.model.invoke([SystemMessage(content=market_prompt)])
         text = getattr(response, "content", "").strip()
-
         matches = re.findall(r"(\w+)\((?:\"|')?([^\"'\)]+)(?:\"|')?\)", text)
-        tool_calls = [{"name": n, "args": {"query": q}, "id": f"toolu_{i+1}"} for i, (n, q) in enumerate(matches)] \
-                     or [{"name": "search_ebay", "args": {"query": f"{title} {issue} {condition} {attributes}".strip()}, "id": "toolu_1"}]
+
+        tool_calls = []
+        for i, (n, q) in enumerate(matches):
+            args = {"query": q}
+            if n == "search_ebay" and category_hint:
+                args["category_hint"] = category_hint
+            tool_calls.append({"name": n, "args": args, "id": f"toolu_{i+1}"})
+
+        if not tool_calls:
+            q = f"{title} {issue} {condition} {attributes}".strip()
+            args = {"query": q}
+            if category_hint:
+                args["category_hint"] = category_hint
+            tool_calls = [{"name": "search_ebay", "args": args, "id": "toolu_1"}]
 
         logger.info(f"[MarketNode] 🧩 Selected tools: {', '.join(t['name'] for t in tool_calls)}")
         response.tool_calls = tool_calls
@@ -252,7 +235,47 @@ search_mycomicshop("Spider-Man #31 Near Mint variant cover")
         }
 
     # -----------------------------------------------------------------
-    # PRICING NODE (compact summary logging)
+    # TOOL WRAPPER
+    # -----------------------------------------------------------------
+    async def _tool_wrapper(self, state: PricingAgentState) -> Dict[str, Any]:
+        tool_calls = []
+        for msg in state["messages"]:
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                tool_calls.extend(msg.tool_calls)
+
+        tool_outputs: Dict[str, Any] = {}
+        for tcall in tool_calls:
+            tool_name = tcall.get("name")
+            tool_args = tcall.get("args", {})
+            tool_id = tcall.get("id")
+            tool_func = next((t for t in self.tools if t.name == tool_name), None)
+            if not tool_func:
+                logger.warning(f"[ToolNode] ⚠️ Tool {tool_name} not found.")
+                tool_outputs[tool_id] = {"status": "missing"}
+                continue
+            try:
+                result = await tool_func.arun(tool_args) if hasattr(tool_func, "arun") else tool_func.run(tool_args)
+                if isinstance(result, dict):
+                    src = result.get("source", tool_name)
+                    med = result.get("median_price")
+                    avg = result.get("average_price")
+                    count = result.get("sample_count")
+                    logger.info(f"[{tool_name}] {src} | median={med} | avg={avg} | samples={count}")
+                tool_outputs[tool_id] = result or {"status": "empty"}
+            except Exception as e:
+                logger.exception(f"[ToolNode] ❌ {tool_name} failed: {e}")
+                tool_outputs[tool_id] = {"status": "error", "message": str(e)}
+        logger.info(f"[ToolNode] ✅ Executed {len(tool_outputs)} tools")
+        return {
+            "messages": state["messages"],
+            "session_id": state["session_id"],
+            "user_id": state["user_id"],
+            "current_item": state.get("current_item"),
+            "tool_results": tool_outputs,
+        }
+
+    # -----------------------------------------------------------------
+    # PRICING NODE
     # -----------------------------------------------------------------
     def _pricing_node(self, state: PricingAgentState) -> Dict[str, Any]:
         type_ = state.get("current_item", {}).get("type", "anything").lower()
@@ -260,7 +283,7 @@ search_mycomicshop("Spider-Man #31 Near Mint variant cover")
         tool_data = state.get("tool_results", {}) or {}
         current_item = state.get("current_item", {}) or {}
 
-        # --- Compact summaries only ---
+        # --- Summaries ---
         summaries = []
         for v in tool_data.values():
             if isinstance(v, dict):
@@ -278,18 +301,30 @@ search_mycomicshop("Spider-Man #31 Near Mint variant cover")
             if isinstance(v, dict):
                 for val in v.values():
                     if isinstance(val, (int, float)) and val > 0:
-                        base_price = val; break
+                        base_price = val
+                        break
                     if isinstance(val, str) and val.replace('.', '', 1).isdigit():
-                        base_price = float(val); break
-            if base_price: break
+                        base_price = float(val)
+                        break
+            if base_price:
+                break
 
+        # --- Apply artist premium if applicable ---
         if base_price:
+            attr_text = " ".join(str(a).lower() for a in current_item.get("attributes", []))
+            for artist, mult in ARTIST_PREMIUMS.items():
+                if artist in attr_text:
+                    base_price = round(base_price * mult, 2)
+                    current_item["Base_Price"] = base_price
+                    logger.info(f"[PricingNode] 🎨 Artist premium applied: {artist} ×{mult}")
+                    break
+
             current_item["Base_Price"] = base_price
             logger.info(f"[PricingNode] 💵 Base_Price: {base_price}")
         else:
             logger.info("[PricingNode] ⚠️ No numeric Base_Price detected.")
 
-        # --- Build clean message chain ---
+        # --- Build message chain ---
         tool_messages = [{"role": "tool", "tool_call_id": k, "content": json.dumps(v, indent=2)} for k, v in tool_data.items()]
         first_human = next((m for m in state["messages"] if isinstance(m, HumanMessage)), None)
         last_tool_msg = next((m for m in reversed(state["messages"]) if isinstance(m, AIMessage) and getattr(m, "tool_calls", None)), None)
@@ -306,29 +341,26 @@ search_mycomicshop("Spider-Man #31 Near Mint variant cover")
         }.get(type_, "You are an expert appraiser.")
 
         pricing_prompt = f"""
-    You have recognition data and summarized tool results.
+You have recognition data and summarized tool results.
 
-    Recognition data:
-    {json.dumps(current_item, indent=2)}
+Recognition data:
+{json.dumps(current_item, indent=2)}
 
-    Output ONLY valid JSON using this schema:
-    {json.dumps(structure, indent=2)}
+Output ONLY valid JSON using this schema:
+{json.dumps(structure, indent=2)}
 
-    Rules:
-    - Fill all fields.
-    - Base_Price = median/lowest from tools.
-    - Price includes condition markup.
-    - Include reasoning in 'AI Notes'.
-    {context}
-    """
+Rules:
+- Fill all fields.
+- Base_Price = median/lowest from tools (after adjustments).
+- Price includes condition markup.
+- Include reasoning in 'AI Notes'.
+{context}
+"""
         messages.append(SystemMessage(content=pricing_prompt))
-
-        # --- Invoke model ---
         response = self.model.invoke(messages)
         content = re.sub(r"^```(?:json)?|```$", "", getattr(response, "content", "").strip(), flags=re.MULTILINE)
         match = re.search(r"\{.*\}", content, re.DOTALL)
         parsed = json.loads(match.group(0)) if match else {"AI Notes": content}
-
         logger.info(f"[PricingNode] 🧾 Final JSON: {parsed}")
         return {
             "messages": [response],
@@ -372,8 +404,10 @@ search_mycomicshop("Spider-Man #31 Near Mint variant cover")
             image_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
 
             session_id = self.get_or_create_session(user_id)
-            messages = [HumanMessage(content=[{"type": "text", "text": f"Please analyze and price this {item_type}."},
-                                              {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}])]
+            messages = [HumanMessage(content=[
+                {"type": "text", "text": f"Please analyze and price this {item_type}."},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
+            ])]
             state = {"messages": messages, "session_id": session_id, "user_id": user_id, "current_item": {"type": item_type}}
 
             result = asyncio.run(self.graph.ainvoke(state))

@@ -14,6 +14,7 @@ This ensures all active market data sources are consistently available.
 
 from pricing_tools.ebay import search_ebay
 from pricing_tools.search_mycomicshop import search_mycomicshop
+from pricing_tools.discogs import search_discogs_tool
 from pricing_tools.search_heritage import search_heritage
 from pricing_tools.search_comicbookrealm import search_comicbookrealm
 from pricing_tools.smart_search import smart_search
@@ -32,6 +33,7 @@ from pricing_tools.smart_search import smart_search
 ALL_SEARCH_TOOLS = [
     search_ebay,
     search_mycomicshop,
+    search_discogs_tool,
     # search_heritage,
     # search_comicbookrealm,
     
