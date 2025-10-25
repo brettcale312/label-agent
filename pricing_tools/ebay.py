@@ -4,12 +4,14 @@ pricing_tools/ebay.py
 Async eBay Browse API wrapper for LangGraph Pricing Agent.
 Fetches current eBay listing data and computes median price,
 filters irrelevant results (graded, signed, slabbed), and removes outliers.
+Includes smart category targeting for comics, records, and trading cards,
+and supports external Vision-based category hints.
 """
 
 import os
 import asyncio
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import aiohttp
 import numpy as np
 from langchain_core.tools import tool
@@ -48,6 +50,7 @@ def _filter_irrelevant(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             filtered.append(i)
     return filtered
 
+
 def _remove_outliers(prices: List[float]) -> List[float]:
     """Trim outliers using the IQR method (1.5×IQR rule)."""
     if len(prices) < 5:
@@ -59,14 +62,74 @@ def _remove_outliers(prices: List[float]) -> List[float]:
     upper_bound = q3 + 1.5 * iqr
     return [p for p in prices if lower_bound <= p <= upper_bound]
 
+
+def _detect_category(query: str, category_hint: Optional[str] = None) -> Dict[str, Optional[str]]:
+    """
+    Detect or apply category targeting.
+    If category_hint is provided (e.g., 'comic', 'record', 'card'),
+    it overrides automatic detection.
+    """
+    q_lower = query.lower()
+    item_type = "general"
+    category_id = None
+
+    # External override from vision or caller
+    if category_hint:
+        hint = category_hint.lower().strip()
+        if hint in ("comic", "comics"):
+            query += " comic book"
+            category_id = "63"
+            item_type = "comic"
+        elif hint in ("record", "vinyl", "music"):
+            query += " vinyl record"
+            category_id = "176985"
+            item_type = "record"
+        elif hint in ("card", "trading card", "tcg"):
+            query += " trading card"
+            category_id = "183454"
+            item_type = "card"
+        else:
+            item_type = hint
+        logger.info(f"[eBayTool] 🎯 Category hint used: {category_hint} → {item_type}")
+    else:
+        # Automatic detection if no hint given
+        if any(k in q_lower for k in ["comic", "#", "variant", "marvel", "dc", "idw", "image", "dark horse"]):
+            query += " comic book"
+            category_id = "63"
+            item_type = "comic"
+        elif any(k in q_lower for k in ["vinyl", "record", "lp", "45rpm", "33rpm", "12\"", "7\""]):
+            query += " vinyl record"
+            category_id = "176985"
+            item_type = "record"
+        elif any(k in q_lower for k in ["pokemon", "yugioh", "yu-gi-oh", "magic", "mtg", "tcg", "trading card", "booster", "binder", "panini", "topps"]):
+            query += " trading card"
+            category_id = "183454"
+            item_type = "card"
+
+    # Apply exclusion filters for common false positives
+    exclude_terms = ["figure", "statue", "toy", "funko", "pop", "lego"]
+    if any(t in q_lower for t in exclude_terms):
+        query += " -figure -statue -toy -funko -pop -lego"
+
+    logger.info(f"[eBayTool] 🧭 Detected category: {item_type} | category_id={category_id or 'None'} | query='{query}'")
+    return {"query": query, "category_id": category_id, "item_type": item_type}
+
+
 # ---------------------------------------------------------------------
 # eBay Tool Definition
 # ---------------------------------------------------------------------
 @tool("search_ebay")
-async def search_ebay(query: str, sold: bool = False) -> Dict[str, Any]:
+async def search_ebay(query: str, sold: bool = False, category_hint: Optional[str] = None) -> Dict[str, Any]:
     """
     Query eBay's Browse API for active listings and return structured pricing data.
     Filters out irrelevant (graded/signed) listings and trims price outliers.
+    Adds smart category targeting for comics, records, and trading cards.
+
+    Args:
+        query: The search string (title, issue, etc.)
+        sold: Whether to target sold listings (currently unused).
+        category_hint: Optional string ('comic', 'record', 'card', etc.)
+                       to override automatic category detection.
     """
     enable_tool = os.getenv("ENABLE_EBAY_TOOL", "false").lower() == "true"
     if not enable_tool:
@@ -74,13 +137,21 @@ async def search_ebay(query: str, sold: bool = False) -> Dict[str, Any]:
         print("⚠️ eBay disabled. ENABLE_EBAY_TOOL not set.", flush=True)
         return {"source": "eBay", "median_price": None, "sample_count": 0}
 
+    # --- Detect item type and refine query ---
+    cat_info = _detect_category(query, category_hint)
+    refined_query = cat_info["query"]
+    category_id = cat_info["category_id"]
+
     async def _perform_search(access_token: str) -> Dict[str, Any]:
         try:
             params = {
-                "q": query,
+                "q": refined_query,
                 "limit": "40",
                 "filter": "buyingOptions:FIXED_PRICE",
             }
+            if category_id:
+                params["category_ids"] = category_id
+
             headers = {
                 "Authorization": f"Bearer {access_token}",
                 "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
@@ -88,8 +159,8 @@ async def search_ebay(query: str, sold: bool = False) -> Dict[str, Any]:
                 "User-Agent": "label-agent/1.0",
             }
 
-            logger.info(f"[eBayTool] 🔍 Searching active listings for '{query}'")
-            print(f"🔎 Querying eBay for '{query}' ...", flush=True)
+            logger.info(f"[eBayTool] 🔍 Searching active listings for '{refined_query}'")
+            print(f"🔎 Querying eBay for '{refined_query}' ...", flush=True)
 
             async with aiohttp.ClientSession() as session:
                 async with session.get(EBAY_API_URL, headers=headers, params=params, timeout=25) as resp:
@@ -125,15 +196,13 @@ async def search_ebay(query: str, sold: bool = False) -> Dict[str, Any]:
     data = result.get("data", {})
     items = data.get("itemSummaries", [])
 
-    # Apply title filters
     filtered_items = _filter_irrelevant(items)
     prices = [float(i.get("price", {}).get("value", 0)) for i in filtered_items if i.get("price")]
 
     if not prices:
-        logger.info(f"[eBayTool] No valid prices found for '{query}' after filtering.")
+        logger.info(f"[eBayTool] No valid prices found for '{refined_query}' after filtering.")
         return {"source": "eBay", "median_price": None, "sample_count": 0, "raw": items[:5]}
 
-    # Remove outliers if enough data
     clean_prices = _remove_outliers(prices)
     if len(clean_prices) != len(prices):
         logger.info(f"[eBayTool] 🔎 Removed {len(prices)-len(clean_prices)} outlier(s).")
@@ -143,7 +212,7 @@ async def search_ebay(query: str, sold: bool = False) -> Dict[str, Any]:
     avg = round(float(np.mean(prices)), 2)
 
     logger.info(f"[eBayTool] 💰 Median ${median} (avg ${avg}) from {len(prices)} listings after filtering.")
-    print(f"💰 eBay median for '{query}': ${median} (avg ${avg}) from {len(prices)} listings.", flush=True)
+    print(f"💰 eBay median for '{refined_query}': ${median} (avg ${avg}) from {len(prices)} listings.", flush=True)
 
     if DEBUG_EBAY:
         print("\n--- Sample Listings ---", flush=True)
@@ -159,6 +228,7 @@ async def search_ebay(query: str, sold: bool = False) -> Dict[str, Any]:
         "median_price": median,
         "average_price": avg,
         "sample_count": len(prices),
+        "category": cat_info["item_type"],
         "raw": filtered_items[:5],
     }
 
@@ -169,8 +239,16 @@ async def search_ebay(query: str, sold: bool = False) -> Dict[str, Any]:
 if __name__ == "__main__":
     async def _test():
         os.environ["ENABLE_EBAY_TOOL"] = "true"
-        query = "Amazing Spider-Man #31 Near Mint"
-        result = await search_ebay(query)
-        print("Test result:", result)
+        tests = [
+            ("Amazing Spider-Man #31 Near Mint", None),
+            ("Pink Floyd The Wall vinyl LP", "record"),
+            ("Pokemon Charizard holo card", "card"),
+            ("Vintage Coca-Cola thermometer", None),
+        ]
+        for q, hint in tests:
+            print("\n====================================")
+            print(f"Testing: {q} (hint={hint})")
+            result = await search_ebay(q, category_hint=hint)
+            print("Result:", result)
 
     asyncio.run(_test())

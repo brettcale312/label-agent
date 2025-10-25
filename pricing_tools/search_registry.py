@@ -13,10 +13,17 @@ This ensures all active market data sources are consistently available.
 """
 
 from pricing_tools.ebay import search_ebay
+from pricing_tools.search_mycomicshop import search_mycomicshop
 from pricing_tools.search_heritage import search_heritage
 from pricing_tools.search_comicbookrealm import search_comicbookrealm
-from pricing_tools.search_gocollect import search_gocollect
 from pricing_tools.smart_search import smart_search
+
+#Not currently used/helpful
+#from pricing_tools.search_gocollect import search_gocollect
+
+#useful, but slow
+#from pricing_tools.search_gocollect_playwright_tool import search_gocollect_playwright_tool
+
 
 # Optional: if you later re-enable Discogs or other sources, add them here.
 # from pricing_tools.discogs import search_discogs
@@ -24,8 +31,14 @@ from pricing_tools.smart_search import smart_search
 # The unified tool list the agent can use
 ALL_SEARCH_TOOLS = [
     search_ebay,
+    search_mycomicshop,
     # search_heritage,
     # search_comicbookrealm,
-    # search_gocollect,
+    
     # smart_search,
+
+    #Not currently used/helpful
+    #search_gocollect,
+    #search_gocollect_playwright_tool,
+    #useful, but slow
 ]

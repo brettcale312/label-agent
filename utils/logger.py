@@ -8,15 +8,12 @@ Creates daily log files and auto-cleans older ones.
 import logging
 import os
 import datetime
+import sys, io
 from glob import glob
 
-# at top of utils/logger.py
-import sys, io
+# --- UTF-8 console fix ---
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
-
-
-# --- Windows UTF-8 console fix ---
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -24,19 +21,17 @@ if sys.platform == "win32":
     except Exception as e:
         print(f"UTF-8 console reconfigure failed: {e}")
 
-
 # --- Configuration ---
 LOG_DIR = "logs"
-LOG_RETENTION_DAYS = 14  # delete logs older than this many days
+LOG_RETENTION_DAYS = 14
 os.makedirs(LOG_DIR, exist_ok=True)
 
-# Use environment variable to control verbosity
-# Example: set ENV=prod to disable console logging
-ENV = os.getenv("ENV", "dev").lower()  # "dev" or "prod"
+# Environment modes: dev, prod, debug
+ENV = os.getenv("ENV", "dev").lower()
+LOG_LEVEL = logging.DEBUG if ENV == "debug" else logging.INFO
 
 
 def _cleanup_old_logs():
-    """Remove log files older than retention period."""
     cutoff = datetime.datetime.now() - datetime.timedelta(days=LOG_RETENTION_DAYS)
     for path in glob(os.path.join(LOG_DIR, "*.log")):
         try:
@@ -53,21 +48,25 @@ def get_logger(name: str) -> logging.Logger:
     """
     Returns a configured logger for the given module name.
     Logs to logs/<name>_YYYYMMDD.log and auto-cleans older logs.
-    Console output is disabled when ENV=prod.
+    Console verbosity controlled by ENV (dev/prod/debug).
     """
     logger = logging.getLogger(name)
-
     if not logger.handlers:
-        logger.setLevel(logging.INFO)
+        logger.setLevel(LOG_LEVEL)
         log_path = os.path.join(LOG_DIR, f"{name}_{datetime.datetime.now():%Y%m%d}.log")
-        handler = logging.FileHandler(log_path)
-        handler.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s: %(message)s"))
-        logger.addHandler(handler)
 
-        # Optional console output (disabled in production)
+        # --- File handler ---
+        file_handler = logging.FileHandler(log_path, encoding="utf-8")
+        file_handler.setLevel(LOG_LEVEL)
+        file_handler.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s: %(message)s"))
+        logger.addHandler(file_handler)
+
+        # --- Console handler ---
         if ENV != "prod":
             console = logging.StreamHandler()
-            console.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+            console_formatter = logging.Formatter("%(levelname)s: %(message)s")
+            console.setFormatter(console_formatter)
+            console.setLevel(logging.DEBUG if ENV == "debug" else logging.INFO)
             logger.addHandler(console)
 
         _cleanup_old_logs()

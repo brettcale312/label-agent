@@ -7,7 +7,25 @@ LangGraph Pricing Agent — 4-stage pipeline with structured vision output and i
 4. Pricing Node → merges recognition + tool data into structured JSON
 """
 
-import base64, io, json, operator, re, asyncio, nest_asyncio
+import os, shutil, tempfile
+
+# ---------------------------------------------------------------------
+# DEV-MODE CACHE FLUSH
+# ---------------------------------------------------------------------
+if os.getenv("RESET_AGENT_CACHE", "0") == "1":
+    for p in [
+        ".langgraph_cache",
+        ".langchain",
+        os.path.join(tempfile.gettempdir(), "langgraph"),
+        os.path.join(os.getenv("LOCALAPPDATA", ""), "langgraph"),
+    ]:
+        try:
+            if p and os.path.exists(p):
+                shutil.rmtree(p, ignore_errors=True)
+        except Exception:
+            pass
+
+import base64, io, json, operator, re, asyncio, nest_asyncio, logging
 from typing import Dict, Any, List, Optional, Annotated
 from PIL import Image
 from langgraph.graph import StateGraph, END
@@ -23,9 +41,14 @@ from pricing_tools.search_registry import ALL_SEARCH_TOOLS
 from schemas.pricing_schemas import get_schema
 from utils.logger import get_logger
 
+# ---------------------------------------------------------------------
+# Noise reduction for libraries
+# ---------------------------------------------------------------------
+for lib in ["httpx", "openai", "langchain", "urllib3", "sqlalchemy"]:
+    logging.getLogger(lib).setLevel(logging.WARNING)
+
 nest_asyncio.apply()
 logger = get_logger(__name__)
-
 
 # ---------------------------------------------------------------------
 # Structured Vision Output
@@ -38,7 +61,6 @@ class VisionOutput(BaseModel):
     notable_attributes: List[str] = []
     raw_summary: Optional[str] = None
 
-
 # ---------------------------------------------------------------------
 # LangGraph State
 # ---------------------------------------------------------------------
@@ -49,7 +71,6 @@ class PricingAgentState(TypedDict):
     current_item: Optional[Dict[str, Any]]
     pricing_result: Optional[Dict[str, Any]]
     tool_results: Optional[Dict[str, Any]]
-
 
 # ---------------------------------------------------------------------
 # PricingAgent
@@ -70,9 +91,12 @@ class PricingAgent:
         g = StateGraph(PricingAgentState)
         g.add_node("vision_agent", self._vision_node)
         g.add_node("market_agent", self._market_node)
-
+        
+        # -----------------------------------------------------------------
+        # TOOL WRAPPER  (clean logging version)
+        # -----------------------------------------------------------------
         async def _tool_wrapper(state: PricingAgentState) -> Dict[str, Any]:
-            """Executes selected tools and maps results to tool_call_ids."""
+            """Executes selected tools and maps results to tool_call_ids with compact logs."""
             tool_calls = []
             for msg in state["messages"]:
                 if hasattr(msg, "tool_calls") and msg.tool_calls:
@@ -84,15 +108,15 @@ class PricingAgent:
                 tool_name = tcall.get("name")
                 tool_args = tcall.get("args", {})
                 tool_id = tcall.get("id")
-
                 tool_func = next((t for t in self.tools if t.name == tool_name), None)
+
                 if not tool_func:
                     logger.warning(f"[ToolNode] ⚠️ Tool {tool_name} not found in registry.")
-                    tool_outputs[tool_id] = {"status": "missing", "message": f"Tool {tool_name} not found."}
+                    tool_outputs[tool_id] = {"status": "missing"}
                     continue
 
                 try:
-                    # Proper StructuredTool invocation
+                    # Run async or sync
                     if hasattr(tool_func, "arun"):
                         result = await tool_func.arun(tool_args)
                     elif hasattr(tool_func, "run"):
@@ -101,14 +125,30 @@ class PricingAgent:
                         logger.warning(f"[ToolNode] ⚠️ Tool {tool_name} has no run/arun method.")
                         result = None
 
-                    logger.info(f"[ToolNode] ✅ Tool {tool_name} returned: {result}")
-                    tool_outputs[tool_id] = result or {"status": "empty", "message": "No data returned."}
+                    # --- Smart summarized logging ---
+                    if isinstance(result, dict):
+                        src = result.get("source", tool_name)
+                        med = result.get("median_price")
+                        avg = result.get("average_price")
+                        count = result.get("sample_count")
+                        summary = f"[{tool_name}] {src} | median={med} | avg={avg} | samples={count}"
+                        logger.info(summary)
+
+                        # Log a trimmed JSON for file logs only (no console spam)
+                        trimmed = {k: v for k, v in result.items() if k not in ("raw", "items", "raw_prices")}
+                        if logger.handlers:
+                            logger.debug(f"[ToolNode DEBUG] {tool_name} result: {json.dumps(trimmed)[:400]}...")
+
+                    else:
+                        logger.info(f"[{tool_name}] result: {result}")
+
+                    tool_outputs[tool_id] = result or {"status": "empty"}
 
                 except Exception as e:
-                    logger.exception(f"[ToolNode] ❌ Tool {tool_name} failed: {e}")
+                    logger.exception(f"[ToolNode] ❌ {tool_name} failed: {e}")
                     tool_outputs[tool_id] = {"status": "error", "message": str(e)}
 
-            logger.info(f"[ToolNode] ✅ Executed {len(tool_outputs)} tools, mapped results to IDs")
+            logger.info(f"[ToolNode] ✅ Executed {len(tool_outputs)} tools")
             return {
                 "messages": state["messages"],
                 "session_id": state["session_id"],
@@ -116,6 +156,7 @@ class PricingAgent:
                 "current_item": state.get("current_item"),
                 "tool_results": tool_outputs,
             }
+
 
         g.add_node("tools", _tool_wrapper)
         g.add_node("pricing_agent", self._pricing_node)
@@ -135,11 +176,11 @@ class PricingAgent:
 You are an expert at identifying collectibles from images.
 Describe the following {item_type} with structured detail:
 - title
-- issue number (if applicable)
+- issue number
 - publisher or brand
-- condition (mint, near mint, etc.)
-- notable attributes (variant, first appearance, holofoil, etc.)
-Also include a short raw_summary of what you see.
+- condition
+- notable attributes
+Include a short raw_summary.
 """
         messages = [SystemMessage(content=vision_prompt)] + state["messages"]
         try:
@@ -151,20 +192,20 @@ Also include a short raw_summary of what you see.
             ai_msg = AIMessage(content=getattr(response, "content", "").strip())
             vision_output = None
 
+        current_item = {"type": item_type}
         if vision_output:
-            current_item = {
-                "type": item_type,
+            current_item.update({
                 "title": vision_output.title,
                 "issue_number": vision_output.issue_number,
                 "publisher": vision_output.publisher,
                 "condition": vision_output.condition,
                 "attributes": vision_output.notable_attributes,
                 "vision_summary": vision_output.raw_summary or vision_output.model_dump_json(indent=2),
-            }
+            })
         else:
-            current_item = {"type": item_type, "vision_summary": ai_msg.content}
+            current_item["vision_summary"] = ai_msg.content
 
-        logger.info(f"[VisionNode] ✅ Structured output:\n{ai_msg.content}")
+        logger.info(f"[VisionNode] ✅ {current_item.get('title','(unknown)')} | {current_item.get('condition','')}")
         return {
             "messages": state["messages"] + [ai_msg],
             "session_id": state["session_id"],
@@ -184,40 +225,25 @@ Also include a short raw_summary of what you see.
 
         market_prompt = f"""
 You are the market intelligence model for collectibles.
-Based on the following item info, decide which pricing data tools to use.
+Based on the following item info, decide which pricing tools to use.
 Item: "{title} {issue}" ({condition}) [{attributes}]
 
 Available tools:
-search_ebay
+search_ebay, search_mycomicshop
 
-Respond ONLY with valid tool call syntax, one per line:
-search_ebay("Amazing Spider-Man #31 Near Mint variant cover")
-
+Respond ONLY with tool call syntax, one per line:
+search_ebay("Spider-Man #31 Near Mint variant cover")
+search_mycomicshop("Spider-Man #31 Near Mint variant cover")
 """
-#,search_heritage, search_comicbookrealm, search_gocollect, smart_search
-#search_gocollect("Amazing Spider-Man #31 Near Mint variant cover")
         response = self.model.invoke([SystemMessage(content=market_prompt)])
-        logger.info(f"[MarketNode] 🧠 Tool decision message: {response}")
+        text = getattr(response, "content", "").strip()
 
-        tool_calls = []
-        if hasattr(response, "tool_calls") and response.tool_calls:
-            tool_calls = response.tool_calls
-        else:
-            text = getattr(response, "content", "").strip()
-            matches = re.findall(r"(\w+)\((?:\"|')?([^\"'\)]+)(?:\"|')?\)", text)
-            if matches:
-                for name, query in matches:
-                    tool_calls.append({"name": name, "args": {"query": query}})
-            else:
-                query = f"{title} {issue} {condition} {attributes}".strip()
-                tool_calls = [{"name": "search_ebay", "args": {"query": query}}]
+        matches = re.findall(r"(\w+)\((?:\"|')?([^\"'\)]+)(?:\"|')?\)", text)
+        tool_calls = [{"name": n, "args": {"query": q}, "id": f"toolu_{i+1}"} for i, (n, q) in enumerate(matches)] \
+                     or [{"name": "search_ebay", "args": {"query": f"{title} {issue} {condition} {attributes}".strip()}, "id": "toolu_1"}]
 
-        for i, t in enumerate(tool_calls, start=1):
-            t.setdefault("id", f"toolu_{i}")
-
+        logger.info(f"[MarketNode] 🧩 Selected tools: {', '.join(t['name'] for t in tool_calls)}")
         response.tool_calls = tool_calls
-        logger.info(f"[MarketNode] 🧩 Normalized tool calls with IDs: {json.dumps(tool_calls, indent=2)}")
-
         return {
             "messages": state["messages"] + [response],
             "session_id": state["session_id"],
@@ -225,8 +251,8 @@ search_ebay("Amazing Spider-Man #31 Near Mint variant cover")
             "current_item": current_item,
         }
 
-        # -----------------------------------------------------------------
-    # Pricing Node (FINAL VERSION with Base_Price injection)
+    # -----------------------------------------------------------------
+    # PRICING NODE (compact summary logging)
     # -----------------------------------------------------------------
     def _pricing_node(self, state: PricingAgentState) -> Dict[str, Any]:
         type_ = state.get("current_item", {}).get("type", "anything").lower()
@@ -234,113 +260,76 @@ search_ebay("Amazing Spider-Man #31 Near Mint variant cover")
         tool_data = state.get("tool_results", {}) or {}
         current_item = state.get("current_item", {}) or {}
 
-        logger.info(f"[PricingNode] 🔧 Received tool data: {json.dumps(tool_data, indent=2)}")
-
-        # Find the last AIMessage with tool_calls (the model that triggered the tools)
-        last_tool_msg = None
-        for msg in reversed(state["messages"]):
-            if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
-                last_tool_msg = msg
-                break
-
-        # --- Convert tool_data into proper OpenAI tool messages ---
-        tool_messages = []
-        for tool_id, result in tool_data.items():
-            tool_messages.append({
-                "role": "tool",
-                "tool_call_id": tool_id,
-                "content": json.dumps(result, indent=2)
-            })
-
-        # --- Build a clean, valid message chain ---
-        clean_messages = []
-        clean_messages.append(SystemMessage(content="You are a pricing agent synthesizing tool data and vision recognition results."))
-        first_human = next((m for m in state["messages"] if isinstance(m, HumanMessage)), None)
-        if first_human:
-            clean_messages.append(first_human)
-        if last_tool_msg:
-            clean_messages.append(last_tool_msg)
-        for tm in tool_messages:
-            clean_messages.append(tm)
-
-        # --- Try to derive a Base_Price from any tool output ---
-        base_price = None
-        for k, v in tool_data.items():
+        # --- Compact summaries only ---
+        summaries = []
+        for v in tool_data.values():
             if isinstance(v, dict):
-                # Search for numeric-looking values in tool outputs
-                for key, val in v.items():
+                src = v.get("source")
+                med = v.get("median_price")
+                avg = v.get("average_price")
+                count = v.get("sample_count")
+                summaries.append(f"{src}: median={med}, avg={avg}, samples={count}")
+        if summaries:
+            logger.info("[PricingNode] 🔧 " + " | ".join(summaries))
+
+        # --- Derive Base_Price ---
+        base_price = None
+        for v in tool_data.values():
+            if isinstance(v, dict):
+                for val in v.values():
                     if isinstance(val, (int, float)) and val > 0:
-                        base_price = val
-                        break
-                    elif isinstance(val, str) and val.replace('.', '', 1).isdigit():
-                        base_price = float(val)
-                        break
-            elif isinstance(v, (int, float)) and v > 0:
-                base_price = v
+                        base_price = val; break
+                    if isinstance(val, str) and val.replace('.', '', 1).isdigit():
+                        base_price = float(val); break
+            if base_price: break
 
         if base_price:
             current_item["Base_Price"] = base_price
-            logger.info(f"[PricingNode] 💵 Injected Base_Price from tools: {base_price}")
+            logger.info(f"[PricingNode] 💵 Base_Price: {base_price}")
         else:
-            logger.info("[PricingNode] ⚠️ No numeric Base_Price detected in tool results.")
+            logger.info("[PricingNode] ⚠️ No numeric Base_Price detected.")
 
-        # --- Diagnostic log of message order ---
-        seq = []
-        for m in clean_messages:
-            if hasattr(m, "role"):
-                seq.append(m.role)
-            elif isinstance(m, dict):
-                seq.append(m.get("role", "?"))
-            else:
-                seq.append(type(m).__name__)
-        logger.info(f"[PricingNode] 🧩 Message order before invoke: {seq}")
+        # --- Build clean message chain ---
+        tool_messages = [{"role": "tool", "tool_call_id": k, "content": json.dumps(v, indent=2)} for k, v in tool_data.items()]
+        first_human = next((m for m in state["messages"] if isinstance(m, HumanMessage)), None)
+        last_tool_msg = next((m for m in reversed(state["messages"]) if isinstance(m, AIMessage) and getattr(m, "tool_calls", None)), None)
 
-        # --- Pricing reasoning prompt ---
-        context = "You are an expert appraiser."
-        if type_ == "comic":
-            context = "You are an expert in comic book pricing; include 3 concise bullets."
-        elif type_ == "card":
-            context = "You are an expert in trading card valuation; include 2 concise bullets."
-        elif type_ == "record":
-            context = "You are an expert in vinyl record valuation; include label, pressing, and year."
+        messages = [SystemMessage(content="You are a pricing agent synthesizing tool data and vision recognition results.")]
+        if first_human: messages.append(first_human)
+        if last_tool_msg: messages.append(last_tool_msg)
+        messages.extend(tool_messages)
+
+        context = {
+            "comic": "You are an expert in comic book pricing; include 3 concise bullets.",
+            "card": "You are an expert in trading card valuation; include 2 concise bullets.",
+            "record": "You are an expert in vinyl record valuation; include label, pressing, and year.",
+        }.get(type_, "You are an expert appraiser.")
 
         pricing_prompt = f"""
-You have recognition data and market tool results.
+    You have recognition data and summarized tool results.
 
-Recognition data:
-{json.dumps(current_item, indent=2)}
+    Recognition data:
+    {json.dumps(current_item, indent=2)}
 
-Tool data:
-{json.dumps(tool_data, indent=2)}
+    Output ONLY valid JSON using this schema:
+    {json.dumps(structure, indent=2)}
 
-Output ONLY valid JSON using this schema:
-{json.dumps(structure, indent=2)}
+    Rules:
+    - Fill all fields.
+    - Base_Price = median/lowest from tools.
+    - Price includes condition markup.
+    - Include reasoning in 'AI Notes'.
+    {context}
+    """
+        messages.append(SystemMessage(content=pricing_prompt))
 
-Rules:
-- Fill all fields.
-- Base_Price = tool median or lowest.
-- Price includes markup for condition.
-- Include reasoning in 'AI Notes'.
-- Do not include commentary or introductions before or after JSON.
-{context}
-"""
-        clean_messages.append(SystemMessage(content=pricing_prompt))
-
-        # --- Call the model with the cleaned message chain ---
-        response = self.model.invoke(clean_messages)
-        content = getattr(response, "content", "").strip()
-        content = re.sub(r"^```(?:json)?|```$", "", content, flags=re.MULTILINE).strip()
+        # --- Invoke model ---
+        response = self.model.invoke(messages)
+        content = re.sub(r"^```(?:json)?|```$", "", getattr(response, "content", "").strip(), flags=re.MULTILINE)
         match = re.search(r"\{.*\}", content, re.DOTALL)
-        if match:
-            content = match.group(0)
+        parsed = json.loads(match.group(0)) if match else {"AI Notes": content}
 
-        try:
-            parsed = json.loads(content)
-        except Exception as e:
-            logger.warning(f"[PricingNode] ⚠️ Could not parse JSON directly: {e}")
-            parsed = {"Title_Issue": "Unrecognized item", "AI Notes": content}
-
-        logger.info(f"[PricingNode] 🧾 Final JSON output: {parsed}")
+        logger.info(f"[PricingNode] 🧾 Final JSON: {parsed}")
         return {
             "messages": [response],
             "session_id": state["session_id"],
@@ -356,7 +345,7 @@ Rules:
         db = get_db_session()
         try:
             session = PricingSessionOps.create_session(db, user_id, session_name)
-            logger.info(f"[PricingAgent] Created new session {session.id} for {user_id}")
+            logger.info(f"[PricingAgent] Created session {session.id} for {user_id}")
             return session.id
         finally:
             db.close()
@@ -383,25 +372,13 @@ Rules:
             image_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
 
             session_id = self.get_or_create_session(user_id)
-            messages = [
-                HumanMessage(
-                    content=[
-                        {"type": "text", "text": f"Please analyze and price this {item_type}."},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
-                    ]
-                )
-            ]
-            state = {
-                "messages": messages,
-                "session_id": session_id,
-                "user_id": user_id,
-                "current_item": {"type": item_type},
-            }
+            messages = [HumanMessage(content=[{"type": "text", "text": f"Please analyze and price this {item_type}."},
+                                              {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}])]
+            state = {"messages": messages, "session_id": session_id, "user_id": user_id, "current_item": {"type": item_type}}
 
             result = asyncio.run(self.graph.ainvoke(state))
             parsed = result.get("pricing_result", {})
             tool_data = result.get("tool_results", {})
-
             logger.info(f"[PricingAgent] ✅ Full pipeline complete.")
             return {"success": True, "pricing_result": parsed, "tool_results": tool_data, "session_id": session_id}
 
