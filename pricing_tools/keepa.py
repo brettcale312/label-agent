@@ -79,6 +79,7 @@ async def get_keepa_price(asin: str, domain: int = 1) -> dict:
             "used_price": used_price,
             "price": final_price,
             "source": "Keepa",
+            "source_used": bool(final_price),
         }
 
     except Exception as e:

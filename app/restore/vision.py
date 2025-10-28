@@ -6,11 +6,10 @@ Vision node for LangGraph Pricing Agent.
 ✅ Extracts structured collectible details from an image
 ✅ Generates 3 short marketing bullets (antique booth or eBay use)
 ✅ Handles comics, cards, records, and general items
-✅ Improves variant & LGY# capture for comics
-✅ Improves card number/set & rarity symbol reading
-✅ Improves record label/year/genre extraction
-✅ Restores full descriptive AI Notes using raw_summary
+✅ Improves card fine-print recognition (number, rarity symbols, holo type)
+✅ Improves record label, genre, and year extraction
 ✅ Builds display_string and search_string via format_rules
+✅ Returns a normalized current_item ready for valuation and export
 """
 
 import json
@@ -61,6 +60,7 @@ async def vision_node(state):
     columns = row_order(item_type)
     schema_str = json.dumps(columns, indent=2)
 
+    # Extended structured schema for the model to fill
     extended_schema = """
     {
       "item_type": "comic | card | record | toy | other",
@@ -68,7 +68,6 @@ async def vision_node(state):
       "series": "",
       "issue_number": "",
       "variant_type": "",
-      "legacy_number_or_code": "",
       "publisher_or_brand": "",
       "release_year": "",
       "barcode_or_isbn": "",
@@ -93,36 +92,36 @@ async def vision_node(state):
     }
     """
 
-    # Tailored extraction + marketing instructions
+    # Tailored extraction and bullet instructions
     if item_type == "comic":
         bullet_instruction = """
-        Create exactly 3 short, catchy bullets highlighting collectible appeal:
-        characters, cover art, first appearances, or variants.
-        Identify variant text near the issue number (e.g., "Variant Edition", "2nd Print")
-        and any codes like "LGY#151" or "Direct Edition".
+        Create exactly 3 short, catchy marketing bullets (1 line each)
+        highlighting what makes this comic desirable to collectors or
+        antique-shop buyers. Mention characters, cover art, story significance,
+        or condition. Avoid long sentences, emojis, or hashtags.
+        Focus on variant editions, first appearances, and visual features.
         """
     elif item_type == "card":
         bullet_instruction = """
-        Create exactly 3 brief bullets (under 8 words) describing card appeal.
+        Create exactly 3 brief bullets (under 8 words each)
+        suitable for a 2x2 label describing the card’s appeal.
         Mention rarity (Common, Rare, Ultra Rare, etc.), holo type, or set.
-        Focus on fine print at the bottom edge for card number (e.g., "032/086")
-        and rarity symbols (★ Rare, ◆ Uncommon, ● Common).
+        Pay attention to fine print at the bottom for card number and rarity symbol.
         """
     elif item_type == "record":
         bullet_instruction = """
-        Create exactly 3 short bullets for vinyl records:
-        mention artist, genre, label (e.g., Columbia, RCA), notable songs, or if it’s a reissue.
+        Create exactly 3 short bullets for a vinyl record,
+        focusing on artist, label, genre, or notable songs.
+        Mention if it's a limited edition, colored vinyl, or reissue.
         """
     else:
         bullet_instruction = """
         Create exactly 3 short bullets describing appeal or condition
-        for an antique booth shopper (under 10 words each).
+        for an antique booth shopper. Keep each under 10 words.
         Mention material, craftsmanship, or era if visible.
         """
 
-    # --------------------------------------------------------------
-    # Prompt assembly (restores long descriptive AI Notes via raw_summary)
-    # --------------------------------------------------------------
+    # Prompt assembly
     prompt = f"""
     You are a professional collectibles cataloging expert and marketing copywriter.
     Analyze the provided image of a {item_type} and return structured details.
@@ -131,16 +130,16 @@ async def vision_node(state):
     {extended_schema}
 
     Notes:
-    - Extract visible identifiers (titles, numbers, rarity marks, or artist info).
-    - For comics: detect variant text or LGY# codes near the issue number.
-    - For cards: read fine print at bottom for set name, card number, and rarity.
-    - For records: extract artist, album title, label (e.g., Columbia), year, and genre.
-    - Grade condition using collector terms (Near Mint, Very Fine, etc.).
-    - Include a full descriptive "raw_summary" (2–3 sentences) explaining what’s visible,
-      such as variant markings, card holo type, or record label and sleeve details.
-      This text will be shown later as "AI Notes" in the app.
+    - Focus on visible identifiers (titles, numbers, rarity marks, or artist info).
+    - For cards: look at the bottom edge for card number and rarity symbol.
+      Convert rarity symbols to text if possible (● Common, ◆ Uncommon, ★ Rare).
+    - For records: extract artist, album title, label, year, and genre.
+    - For comics: extract title, issue number, variant edition, and publisher.
+    - Grade condition using collector terms (e.g., Near Mint, Very Fine, Good).
+    - Include a short "raw_summary" (1–2 sentences describing the image).
     - {bullet_instruction}
-    - Ensure exactly 3 bullets.
+    - Ensure exactly 3 bullets are always provided.
+    - Do not output anything outside the JSON object.
     """
 
     # --------------------------------------------------------------
@@ -157,7 +156,7 @@ async def vision_node(state):
     )
 
     # --------------------------------------------------------------
-    # LLM call + safe JSON extraction
+    # LLM call with safe JSON extraction
     # --------------------------------------------------------------
     try:
         response = await llm.ainvoke([message])
@@ -170,40 +169,30 @@ async def vision_node(state):
         logger.info("[VisionNode DEBUG] Raw vision_data: %s", json.dumps(vision_data, indent=2))
     except Exception as e:
         logger.warning(f"[VisionNode] ⚠️ JSON parse failed: {e}")
-        vision_data = {"raw_summary": f"Vision extraction error: {e}", "sales_bullets": ["", "", ""]}
+        vision_data = {"AI Notes": f"Vision extraction error: {e}", "sales_bullets": ["", "", ""]}
 
     # --------------------------------------------------------------
-    # Normalize + map results
+    # Normalize and map results
     # --------------------------------------------------------------
     title = vision_data.get("title") or "Untitled"
     issue_number = vision_data.get("issue_number") or ""
-    variant = vision_data.get("variant_type") or vision_data.get("legacy_number_or_code") or ""
     publisher = vision_data.get("publisher_or_brand") or "Unknown"
     condition = vision_data.get("condition_estimate") or "Unspecified"
     barcode = vision_data.get("barcode_or_isbn") or ""
+    variant = vision_data.get("variant_type") or ""
     rarity = vision_data.get("rarity_or_limited_info") or vision_data.get("rarity_symbol") or ""
-    set_name = vision_data.get("set_name") or vision_data.get("series") or ""
+    set_name = vision_data.get("set_name") or ""
     card_number = vision_data.get("card_number") or ""
-
-    # Fallback: regex for ##/### pattern
-    if not card_number:
-        match = re.search(r"\d{1,3}/\d{1,3}", json.dumps(vision_data))
-        if match:
-            card_number = match.group(0)
-
     holo_type = vision_data.get("holo_type") or ""
     artist = vision_data.get("artist_or_band") or vision_data.get("cover_artist_or_label") or ""
     genre = vision_data.get("genre") or ""
-    year = vision_data.get("release_year") or ""
-    label = vision_data.get("label") or vision_data.get("publisher_or_brand") or vision_data.get("cover_artist_or_label") or ""
-    subtype = vision_data.get("series") or vision_data.get("publisher_or_brand") or ""
-    ai_notes = vision_data.get("raw_summary") or "No AI notes provided."
+    bullets = vision_data.get("sales_bullets") or ["", "", ""]
 
-    # Clean and normalize bullets
-    bullets = [b.strip().capitalize() for b in (vision_data.get("sales_bullets") or []) if b.strip()]
+    # Pad / trim bullets to exactly 3
     while len(bullets) < 3:
         bullets.append("")
-    bullets = bullets[:3]
+    if len(bullets) > 3:
+        bullets = bullets[:3]
 
     # --------------------------------------------------------------
     # Build normalized current_item
@@ -222,13 +211,9 @@ async def vision_node(state):
         "holo_type": holo_type,
         "artist": artist,
         "genre": genre,
-        "year": year,
-        "label": label,
-        "subtype": subtype,
         "bullet1": bullets[0],
         "bullet2": bullets[1],
         "bullet3": bullets[2],
-        "ai_notes": ai_notes,
         "vision_summary": vision_data.get("raw_summary") or "",
         "category_hint": item_type,
         "vision_fields": vision_data,
@@ -244,7 +229,6 @@ async def vision_node(state):
         f"{publisher or 'Unknown'} | {condition or 'Unspecified'} | "
         f"Bullets: {bullets}"
     )
-    logger.info(f"[VisionNode] 🧠 AI Notes: {ai_notes[:200]}")
 
     return {
         **state,

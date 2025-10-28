@@ -1,25 +1,137 @@
 """
 market_node.py
 ---------------
-Fetches market data from eBay and Discogs concurrently.
+LangGraph Market Node
+
+Determines which market tools (eBay, MyComicShop, Discogs, etc.)
+should be called based on recognized item information.
+
+✅ Uses the persistent LLM context from `base_context`
+✅ Writes tool_calls into state for downstream ToolNode
+✅ Includes barcode, variant, and artist when available
+✅ Performs record-specific artist inference when needed
 """
 
-import asyncio
-from pricing_tools.ebay import search_ebay_tool
-from pricing_tools.discogs import search_discogs_tool
+import re
+import json
+from langchain_core.messages import HumanMessage, AIMessage
 from utils.logger import get_logger
+from langgraph_tools.context.base_context import get_llm_context
+from langgraph_tools.config.model_config import AGENT_MODE
 
 logger = get_logger("market_node")
 
-async def market_node(query: str) -> dict:
-    """Run eBay and Discogs lookups in parallel."""
-    logger.info(f"[MarketNode] Searching for '{query}'")
-    try:
-        ebay_task = asyncio.create_task(search_ebay_tool(query))
-        discogs_task = asyncio.create_task(search_discogs_tool(query))
-        ebay_result, discogs_result = await asyncio.gather(ebay_task, discogs_task)
 
-        return {"ebay": ebay_result, "discogs": discogs_result}
+# ---------------------------------------------------------------------
+# Market Node
+# ---------------------------------------------------------------------
+async def market_node(state):
+    """Decide which market tools to use and build structured queries."""
+
+    llm = get_llm_context()
+    logger.info(f"[MarketNode] 🧠 Using persistent context | Mode={AGENT_MODE.upper()}")
+    
+    current_item = state.get("current_item", {}) or {}
+    category_hint = current_item.get("category_hint", "general")
+
+    title = current_item.get("title") or ""
+    issue = current_item.get("issue_number") or ""
+    variant = current_item.get("variant") or ""
+    artist = current_item.get("artist") or ""
+    condition = current_item.get("condition") or ""
+    barcode = current_item.get("barcode") or ""
+    attributes = ", ".join(a for a in current_item.get("attributes", []) if a)
+
+    # -----------------------------------------------------------------
+    # 🎵 Optional record enhancement: infer missing artist
+    # -----------------------------------------------------------------
+    if category_hint == "record" and not artist:
+        try:
+            enrichment_prompt = f"""
+            You are a professional music catalog expert.
+            The album title is "{title}".
+            Guess the most likely artist or band associated with that title.
+            Respond ONLY with the artist name, or 'Unknown' if unsure.
+            """
+            response = await llm.ainvoke([HumanMessage(content=enrichment_prompt)])
+            artist_name = getattr(response, "content", "").strip()
+            if artist_name and artist_name.lower() != "unknown":
+                current_item["artist"] = artist_name
+                artist = artist_name
+                logger.info(f"[MarketNode] 🎵 Inferred artist for '{title}': {artist_name}")
+        except Exception as e:
+            logger.warning(f"[MarketNode] ⚠️ Artist inference failed: {e}")
+
+    # -----------------------------------------------------------------
+    # 🔍 Build query_context based on item type
+    # -----------------------------------------------------------------
+    if category_hint == "comic":
+        query_context = f"{title} {issue} {variant} {condition}".strip()
+    elif category_hint == "record":
+        query_context = f"{artist} {title} {condition}".strip()
+    elif category_hint == "card":
+        query_context = f"{title} {attributes} {condition}".strip()
+    else:
+        query_context = f"{title} {attributes} {condition}".strip()
+
+    # Add barcode if available (helps eBay accuracy)
+    if barcode and barcode not in query_context:
+        query_context = f"{query_context} {barcode}".strip()
+
+    logger.info(f"[MarketNode] 🔎 Query context: {query_context}")
+
+    # -----------------------------------------------------------------
+    # Build the LLM prompt for tool selection
+    # -----------------------------------------------------------------
+    market_prompt = f"""
+    You are the market intelligence model for collectibles.
+    Your goal is to select which pricing tools to call
+    based on the item description and category.
+
+    Item info: "{query_context}"
+    Category: {category_hint}
+
+    Available tools:
+      - search_ebay (use for all collectibles)
+      - search_mycomicshop (for comics)
+      - search_discogs (for vinyl records)
+
+    Respond ONLY with tool call syntax, one per line, e.g.:
+      search_ebay("Spider-Man #31 Near Mint variant cover")
+      search_mycomicshop("Spider-Man #31 Near Mint variant cover")
+      search_discogs("Chicago Transit Authority - Chicago Vinyl Record")
+    """
+
+    try:
+        response = await llm.ainvoke([HumanMessage(content=market_prompt)])
+        text = getattr(response, "content", "").strip()
     except Exception as e:
-        logger.error(f"[MarketNode] Error: {e}")
-        return {"error": str(e)}
+        logger.error(f"[MarketNode] ❌ Market prompt failed: {e}")
+        text = ""
+
+    # -----------------------------------------------------------------
+    # Parse and build tool calls
+    # -----------------------------------------------------------------
+    matches = re.findall(r"(\w+)\((?:\"|')?([^\"'\)]+)(?:\"|')?\)", text)
+    tool_calls = []
+
+    for i, (name, query) in enumerate(matches):
+        args = {"query": query}
+        if name == "search_ebay" and category_hint:
+            args["category_hint"] = category_hint
+        tool_calls.append({"name": name, "args": args, "id": f"toolu_{i+1}"})
+
+    # Default fallback if nothing parsed
+    if not tool_calls:
+        args = {"query": query_context or title or "collectible"}
+        if category_hint:
+            args["category_hint"] = category_hint
+        tool_calls = [{"name": "search_ebay", "args": args, "id": "toolu_1"}]
+
+    # ✅ Return with tool_calls directly in state
+    return {
+        **state,
+        "messages": state.get("messages", []) + [AIMessage(content=f"Tool selection: {text or query_context}")],
+        "current_item": current_item,
+        "tool_calls": tool_calls,
+    }

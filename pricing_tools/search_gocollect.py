@@ -89,6 +89,7 @@ async def search_gocollect(query: str, limit: int | None = 10) -> dict:
         "average_price": avg_price,
         "grades_detected": sorted(set(grade_matches)),
         "raw": results[:limit],
+        "source_used": bool(median_price or avg_price),
     }
 
 
@@ -103,6 +104,7 @@ def _empty_result(query: str, grades=None, results=None) -> dict:
         "average_price": None,
         "grades_detected": sorted(set(grades or [])),
         "raw": results or [],
+        "source_used": False,
     }
 
 

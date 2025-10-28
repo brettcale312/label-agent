@@ -102,6 +102,7 @@ async def extract_fmv_from_page(url: str) -> dict:
                 "median_price": fmv_value,
                 "average_price": fmv_value,
                 "raw_prices": matches,
+                "source_used": bool(fmv_value),
             }
 
         except Exception as e:
@@ -111,6 +112,7 @@ async def extract_fmv_from_page(url: str) -> dict:
                 "url": url,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "error": str(e),
+                "source_used": False,
             }
         finally:
             await browser.close()
@@ -143,6 +145,7 @@ async def search_gocollect_playwright_tool(query: str) -> dict:
             "average_price": None,
             "sample_count": 0,
             "raw_prices": [],
+            "source_used": False,
         }
 
     result = await extract_fmv_from_page(gocollect_url)

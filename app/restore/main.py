@@ -64,7 +64,7 @@ logger.info(f"🧾 Log file started: {run_log_path}")
 # ---------------------------------------------------------------------
 # FastAPI setup
 # ---------------------------------------------------------------------
-app = FastAPI(title="Label Agent Starter", version="0.6.1-review-fix")
+app = FastAPI(title="Label Agent Starter", version="0.6.0-schema-sync")
 templates = Jinja2Templates(directory="templates")
 
 LOG_DIR = "logs"
@@ -83,13 +83,11 @@ logger.info("[Startup] PricingAgent initialized globally.")
 # ---------------------------------------------------------------------
 from langgraph_tools.context.base_context import get_llm_context, reset_global_context
 
-
 @app.on_event("startup")
 async def preload_llm_context():
     """Ensure shared persistent LLM context is loaded once per process."""
     _ = get_llm_context()
     logger.info("[Startup] ✅ Global LLM context preloaded and persistent.")
-
 
 # ---------------------------------------------------------------------
 # Helper Logging Functions
@@ -121,7 +119,6 @@ def log_alignment_issues(type_: str, missing: list, extras: list, renamed: dict)
         if renamed:
             f.write(f"  🔄 Renamed: {json.dumps(renamed, indent=2)}\n")
 
-
 # ---------------------------------------------------------------------
 # INGEST — Persistent LangGraph Agent (Per-User Sessions)
 # ---------------------------------------------------------------------
@@ -151,11 +148,9 @@ async def ingest(request: Request, image: UploadFile, type: str = Form(...)):
         next_num = await get_next_inventory_number(type)
         fields["Inventory #"] = next_num or str(uuid.uuid4())[:8]
 
-        # Ensure unified presence
+        # Add timestamp + ensure unified field presence
         fields.setdefault("Base Price", fields.get("Price", ""))
-
-        # ✅ Do NOT override Price Source here.
-        # It's already properly formatted in session_utils.build_review_fields().
+        fields.setdefault("Price Source", result.get("tool_results", {}).keys())
 
         # Save structured output to temporary file for review
         review_id = str(uuid.uuid4())
@@ -183,17 +178,15 @@ async def review_page(request: Request, session_id: str):
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    # ✅ Pass only clean schema fields to template
     return templates.TemplateResponse(
         "review.html",
         {
             "request": request,
             "session_id": session_id,
-            "data": data["fields"],  # <-- the spreadsheet-ready fields
+            "data": data["fields"],
             "type_": data.get("type"),
         },
     )
-
 
 # ---------------------------------------------------------------------
 # APPROVE ITEM
@@ -264,7 +257,6 @@ async def approve_item(request: Request, session_id: str):
             json.dump({"fields": fields, "type": type_}, f, indent=2)
 
     return RedirectResponse(url=f"/success/{session_id}", status_code=303)
-
 
 # ---------------------------------------------------------------------
 # SUCCESS PAGE

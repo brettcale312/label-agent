@@ -50,6 +50,7 @@ async def get_scryfall_price(card_name: str) -> dict:
             "usd_foil": float(data["prices"]["usd_foil"]) if data["prices"]["usd_foil"] else None,
             "image_url": data["image_uris"]["normal"] if "image_uris" in data else None,
             "source": "Scryfall",
+            "source_used": bool(data.get("prices", {}).get("usd") or data.get("prices", {}).get("usd_foil")),
         }
 
     except Exception as e:

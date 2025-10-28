@@ -133,6 +133,7 @@ async def _async_discogs_lookup(query: str, limit: int = 10) -> dict:
                         "lowest_price": lowest_price,
                         "sample_count": num_for_sale,
                         "source": "Discogs",
+                        "source_used": bool(median_price or lowest_price),
                     }
                     best_num_for_sale = num_for_sale
 
@@ -184,6 +185,7 @@ async def search_discogs_tool(query: str) -> dict:
                 "average": None,
                 "samples": 0,
                 "error": f"No Discogs data found for '{query}'",
+                "source_used": False,
             }
 
         median_price = result.get("median_price")
@@ -200,6 +202,7 @@ async def search_discogs_tool(query: str) -> dict:
             "median": median_price,
             "average": median_price or lowest_price,
             "samples": samples,
+            "source_used": bool(price_val),
         }
     except Exception as e:
         logger.error(f"[DiscogsTool] {e}")

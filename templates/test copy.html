@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Review Item</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      background: #fafafa;
+      color: #333;
+      padding: 2em;
+      max-width: 600px;
+      margin: auto;
+    }
+    h1 {
+      color: #1a73e8;
+      text-align: center;
+    }
+    .ai-notes-section {
+      background: #f8f9fa;
+      border: 1px solid #dee2e6;
+      border-left: 4px solid #1a73e8;
+      border-radius: 6px;
+      padding: 1em;
+      margin: 1em 0;
+    }
+    .ai-notes-label {
+      font-weight: 600;
+      color: #1a73e8;
+      margin-bottom: 0.5em;
+      display: block;
+    }
+    .ai-notes-content {
+      font-style: italic;
+      color: #666;
+      line-height: 1.4;
+    }
+    form {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75em;
+      margin-top: 1.5em;
+    }
+    label {
+      font-weight: 600;
+      margin-bottom: 0.2em;
+    }
+    input[type="text"],
+    textarea {
+      padding: 0.5em;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 1em;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    textarea {
+      min-height: 4em;
+      resize: vertical;
+    }
+    .price-section {
+      background: #e3f2fd;
+      border: 1px solid #bbdefb;
+      border-radius: 6px;
+      padding: 1em;
+      margin: 0.5em 0;
+    }
+    .price-label {
+      font-weight: 600;
+      color: #1976d2;
+      margin-bottom: 0.5em;
+      display: block;
+    }
+    .price-input {
+      border: 2px solid #1976d2 !important;
+      font-weight: bold;
+      font-size: 1.1em;
+      color: #1976d2;
+    }
+    button {
+      background: #1a73e8;
+      color: white;
+      border: none;
+      padding: 0.8em;
+      border-radius: 0.5em;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 1em;
+    }
+    button:hover {
+      background: #0f5dc1;
+    }
+    .instructions {
+      background: #fff3cd;
+      border: 1px solid #ffeaa7;
+      border-radius: 6px;
+      padding: 1em;
+      margin-bottom: 1em;
+      color: #856404;
+    }
+    .instructions h3 {
+      margin-top: 0;
+      color: #856404;
+    }
+  </style>
+</head>
+<body>
+  <h1>Review {{ type_.capitalize() }}</h1>
+  
+  <div class="instructions">
+    <h3>📝 Review Instructions</h3>
+    <p>
+      Please review the AI-generated information below. Pay special attention to the 
+      <strong>Price</strong> and <strong>AI Notes</strong> — you can adjust the price 
+      if you disagree with the AI's assessment.
+    </p>
+  </div>
+
+  {% if data.get("AI Notes") %}
+    <div class="ai-notes-section">
+      <span class="ai-notes-label">🤖 AI Notes:</span>
+      <div class="ai-notes-content">{{ data["AI Notes"] }}</div>
+    </div>
+  {% endif %}
+
+  <form action="/approve/{{ session_id }}" method="post">
+    {% for key, value in data.items() %}
+      {% if key != "AI Notes" and key != "Barcode" and key != "Base_Price" %}
+        {% if key == "Price" %}
+          <div class="price-section">
+            <label class="price-label" for="{{ key }}">💰 {{ key }} (Adjust if needed)</label>
+            <input type="text" class="price-input" id="{{ key }}" name="{{ key }}" value="{{ value }}">
+          </div>
+        {% else %}
+          <label for="{{ key }}">{{ key }}</label>
+          {% if key == "Description" %}
+            <textarea id="{{ key }}" name="{{ key }}">{{ value }}</textarea>
+          {% else %}
+            <input type="text" id="{{ key }}" name="{{ key }}" value="{{ value }}">
+          {% endif %}
+        {% endif %}
+      {% endif %}
+    {% endfor %}
+
+    {% if not data.get("Inventory #") %}
+      <label for="Inventory #">Inventory #</label>
+      <input type="text" id="Inventory #" name="Inventory #" placeholder="Auto-assigned on save">
+    {% endif %}
+
+    <button type="submit">✅ Approve & Save</button>
+  </form>
+</body>
+</html>

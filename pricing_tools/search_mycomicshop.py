@@ -90,6 +90,7 @@ async def search_mycomicshop(query: str, limit: int | None = 10) -> dict:
         "average_price": avg_price,
         "conditions_detected": sorted(set(cond_matches)),
         "raw": results[:limit],
+        "source_used": bool(median_price or avg_price),
     }
 
 
@@ -104,6 +105,7 @@ def _empty_result(query: str, conditions=None, results=None) -> dict:
         "average_price": None,
         "conditions_detected": sorted(set(conditions or [])),
         "raw": results or [],
+        "source_used": False,
     }
 
 

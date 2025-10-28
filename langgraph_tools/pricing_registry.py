@@ -1,28 +1,40 @@
 """
-LangGraph tools for pricing, eBay lookups, and database operations.
-These tools are registered with the LangGraph ToolNode and can be called
-automatically by the PricingAgent or manually for testing and persistence.
+pricing_registry.py
+-------------------
+LangGraph database & persistence tool registry.
+
+These tools allow the PricingAgent (or future nodes)
+to read and write from your database, persist session data,
+and manage user preferences or learned pricing patterns.
+
+➡ Currently optional — the active pricing pipeline uses
+   only market data tools from `pricing_tools/search_registry.py`.
+
+Import example (for persistence nodes or learning agents):
+    from langgraph_tools.pricing_registry import PRICING_DB_TOOLS
 """
 
 from typing import Dict, Any, Optional, List
 from langchain_core.tools import tool
 from database.connection import get_db_session
 from database.operations import (
-    PricingSessionOps, ItemOps, LearnedPatternOps, UserPreferenceOps,
+    PricingSessionOps,
+    ItemOps,
+    LearnedPatternOps,
+    UserPreferenceOps,
 )
 from utils.logger import get_logger
-import os
-from pricing_tools.ebay import search_ebay
 
-logger = get_logger(__name__)
+logger = get_logger("pricing_registry")
+
 
 # ---------------------------------------------------------------------------
-# Knowledge & Database Tools
+# 🔍 Learned Pattern Tools
 # ---------------------------------------------------------------------------
 
-@tool
+@tool("get_learned_patterns")
 def get_learned_patterns(pattern_type: str, pattern_key: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Retrieve learned pricing patterns from previous sessions."""
+    """Retrieve learned pricing patterns or heuristics from past sessions."""
     try:
         db = get_db_session()
         try:
@@ -34,11 +46,11 @@ def get_learned_patterns(pattern_type: str, pattern_key: Optional[str] = None) -
         finally:
             db.close()
     except Exception as e:
-        logger.error(f"[TOOLS] Error retrieving learned patterns: {e}")
+        logger.error(f"[get_learned_patterns] {e}")
         return []
 
 
-@tool
+@tool("save_learned_pattern")
 def save_learned_pattern(
     session_id: int,
     pattern_type: str,
@@ -47,9 +59,9 @@ def save_learned_pattern(
     confidence_score: float = 0.0,
     sample_size: int = 1,
 ) -> Dict[str, Any]:
-    """Save a new learned pricing pattern to the database."""
+    """Save a new learned pricing pattern for AI model fine-tuning or analytics."""
     if not all([session_id, pattern_type, pattern_key, pattern_data]):
-        return {"success": False, "reason": "invalid arguments"}
+        return {"success": False, "reason": "missing arguments"}
 
     try:
         db = get_db_session()
@@ -62,13 +74,17 @@ def save_learned_pattern(
         finally:
             db.close()
     except Exception as e:
-        logger.error(f"[TOOLS] Error saving learned pattern: {e}")
+        logger.error(f"[save_learned_pattern] {e}")
         return {"success": False, "error": str(e)}
 
 
-@tool
+# ---------------------------------------------------------------------------
+# 👤 User Preference Tools
+# ---------------------------------------------------------------------------
+
+@tool("get_user_preferences")
 def get_user_preferences(user_id: str) -> Dict[str, Any]:
-    """Retrieve a user's stored pricing and display preferences."""
+    """Retrieve stored preferences for a given user (venue defaults, rounding, etc.)."""
     try:
         db = get_db_session()
         try:
@@ -82,13 +98,17 @@ def get_user_preferences(user_id: str) -> Dict[str, Any]:
         finally:
             db.close()
     except Exception as e:
-        logger.error(f"[TOOLS] Error getting user preferences: {e}")
+        logger.error(f"[get_user_preferences] {e}")
         return {"success": False, "error": str(e)}
 
 
-@tool
+# ---------------------------------------------------------------------------
+# 💾 Session & Item Persistence Tools
+# ---------------------------------------------------------------------------
+
+@tool("save_priced_item")
 def save_priced_item(session_id: int, item_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Save a priced item and update the session's last activity timestamp."""
+    """Persist a priced item to the database and update its session activity timestamp."""
     try:
         db = get_db_session()
         try:
@@ -98,13 +118,13 @@ def save_priced_item(session_id: int, item_data: Dict[str, Any]) -> Dict[str, An
         finally:
             db.close()
     except Exception as e:
-        logger.error(f"[TOOLS] Error saving priced item: {e}")
+        logger.error(f"[save_priced_item] {e}")
         return {"success": False, "error": str(e)}
 
 
-@tool
+@tool("get_session_history")
 def get_session_history(session_id: int) -> List[Dict[str, Any]]:
-    """Retrieve all items priced within a given session."""
+    """Fetch all items priced within a given session."""
     try:
         db = get_db_session()
         try:
@@ -113,14 +133,15 @@ def get_session_history(session_id: int) -> List[Dict[str, Any]]:
         finally:
             db.close()
     except Exception as e:
-        logger.error(f"[TOOLS] Error getting session history: {e}")
+        logger.error(f"[get_session_history] {e}")
         return []
 
+
 # ---------------------------------------------------------------------------
-# Tool Registration
+# 🔧 Tool Registry
 # ---------------------------------------------------------------------------
 
-pricing_tools = [
+PRICING_DB_TOOLS = [
     get_learned_patterns,
     save_learned_pattern,
     get_user_preferences,
@@ -128,21 +149,10 @@ pricing_tools = [
     get_session_history,
 ]
 
-ENABLE_EBAY_TOOL = os.getenv("ENABLE_EBAY_TOOL", "true").lower() in ("true", "1", "yes")
-
-if ENABLE_EBAY_TOOL:
-    pricing_tools.append(search_ebay)
-    logger.info("[PricingTools] ENABLE_EBAY_TOOL=true — eBay tool registered")
-else:
-    logger.info("[PricingTools] ENABLE_EBAY_TOOL not set — eBay tool disabled")
-
-# ---------------------------------------------------------------------------
-# Helper Function
-# ---------------------------------------------------------------------------
 
 def get_tool_by_name(name: str):
-    """Return a tool object by its registered name (for manual lookup)."""
-    for t in pricing_tools:
+    """Return a tool object by its registered name (for manual lookup or testing)."""
+    for t in PRICING_DB_TOOLS:
         if getattr(t, "name", None) == name:
             return t
     return None

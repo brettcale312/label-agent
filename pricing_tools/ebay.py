@@ -230,6 +230,7 @@ async def search_ebay(query: str, sold: bool = False, category_hint: Optional[st
         "sample_count": len(prices),
         "category": cat_info["item_type"],
         "raw": filtered_items[:5],
+        "source_used": bool(median or avg),
     }
 
 
