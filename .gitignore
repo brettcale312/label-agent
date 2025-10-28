@@ -90,3 +90,4 @@ debug_*.py
 # Temporary agent state files
 logs/agent_state.json
 logs/debug_vision.jpg
+patch.diff

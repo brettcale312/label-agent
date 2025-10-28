@@ -131,14 +131,32 @@
     </p>
   </div>
 
-  {% if data.get("AI Notes") %}
-    <div class="ai-notes-section">
-      <span class="ai-notes-label">🤖 AI Notes:</span>
-      <div class="ai-notes-content">{{ data["AI Notes"] }}</div>
-    </div>
-  {% endif %}
-
   <form action="/approve/{{ session_id }}" method="post">
+    {% if data.get("AI Notes") %}
+      <div class="ai-notes-section">
+        <span class="ai-notes-label">🤖 AI Notes:</span>
+
+        <!-- Collapsible View/Edit -->
+        <details {% if data["AI Notes"]|length > 400 %}open{% endif %}>
+          <summary style="cursor:pointer; color:#1a73e8; font-weight:600; margin-bottom:0.4em;">
+            View / Edit AI Notes
+          </summary>
+          <textarea
+            id="AI Notes"
+            name="AI Notes"
+            style="width:100%; min-height:6em; border:1px solid #ccc; border-radius:4px; padding:0.5em; margin-top:0.4em; font-size:0.95em;"
+          >{{ data["AI Notes"] }}</textarea>
+        </details>
+
+        <!-- Preview snippet -->
+        <div class="ai-notes-content">
+          {{ data["AI Notes"][:200] }}{% if data["AI Notes"]|length > 200 %}...{% endif %}
+        </div>
+      </div>
+    {% else %}
+      <textarea id="AI Notes" name="AI Notes" style="display:none;"></textarea>
+    {% endif %}
+
     <!-- Title -->
     <label for="Title">Title</label>
     <input type="text" id="Title" name="Title" value="{{ data.get('Title','') }}" />

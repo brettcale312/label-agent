@@ -11,18 +11,15 @@ Handles:
 """
 
 import os
-import io
 import json
 import uuid
 import datetime
-import base64
 import logging
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from PIL import Image
 
 # ---------------------------------------------------------------------
 # Load environment variables early
@@ -40,6 +37,7 @@ from app.langgraph_agent_runner import price_image
 from database.connection import get_db_session
 from database.operations import PricingSessionOps
 from utils.logger import get_logger
+from utils.normalizers import extract_price_sources  # ✅ shared normalization
 
 logger = get_logger(__name__)
 
@@ -64,7 +62,7 @@ logger.info(f"🧾 Log file started: {run_log_path}")
 # ---------------------------------------------------------------------
 # FastAPI setup
 # ---------------------------------------------------------------------
-app = FastAPI(title="Label Agent Starter", version="0.6.1-review-fix")
+app = FastAPI(title="Label Agent Starter", version="0.6.2-ingest-enhanced")
 templates = Jinja2Templates(directory="templates")
 
 LOG_DIR = "logs"
@@ -154,8 +152,10 @@ async def ingest(request: Request, image: UploadFile, type: str = Form(...)):
         # Ensure unified presence
         fields.setdefault("Base Price", fields.get("Price", ""))
 
-        # ✅ Do NOT override Price Source here.
-        # It's already properly formatted in session_utils.build_review_fields().
+        # ✅ Normalize Price Source here only if missing or raw
+        if not fields.get("Price Source") or "toolu" in fields.get("Price Source", "").lower():
+            tool_results = result.get("tool_results", {}) or {}
+            fields["Price Source"] = extract_price_sources(tool_results)
 
         # Save structured output to temporary file for review
         review_id = str(uuid.uuid4())
@@ -169,6 +169,7 @@ async def ingest(request: Request, image: UploadFile, type: str = Form(...)):
     except Exception as e:
         logger.error(f"[Ingest] ❌ {e}")
         raise HTTPException(status_code=500, detail=f"Failed to process image: {e}")
+
 
 # ---------------------------------------------------------------------
 # REVIEW PAGE
@@ -189,7 +190,7 @@ async def review_page(request: Request, session_id: str):
         {
             "request": request,
             "session_id": session_id,
-            "data": data["fields"],  # <-- the spreadsheet-ready fields
+            "data": data["fields"],
             "type_": data.get("type"),
         },
     )
