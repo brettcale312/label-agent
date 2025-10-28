@@ -14,6 +14,7 @@ from langchain_core.messages import HumanMessage
 from database.connection import get_db_session
 from database.operations import PricingSessionOps
 from utils.logger import get_logger
+from utils.normalizers import extract_price_sources, clean_ai_notes
 from app.models import row_order
 from schemas.pricing_schemas import get_schema
 
@@ -49,6 +50,7 @@ def get_or_create_session(user_id: str) -> int:
 # Image Preprocessing
 # ---------------------------------------------------------------------
 def preprocess_image(image_bytes: bytes) -> str:
+    """Resize and compress image, returning base64-encoded JPEG."""
     image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     image.thumbnail((1024, 1024))
     buf = io.BytesIO()
@@ -60,6 +62,7 @@ def preprocess_image(image_bytes: bytes) -> str:
 # Review Field Builder
 # ---------------------------------------------------------------------
 def build_review_fields(final_state: Dict[str, Any], item_type: str) -> Dict[str, Any]:
+    """Merge LangGraph output into schema-friendly review structure."""
     schema = get_schema(item_type)
     current_item = final_state.get("current_item") or {}
     valuation = final_state.get("valuation") or {}
@@ -76,77 +79,50 @@ def build_review_fields(final_state: Dict[str, Any], item_type: str) -> Dict[str
     result = {key: "" for key in schema.keys()}
 
     # -----------------------------------------------------------------
-    # AI NOTES - use full descriptive raw_summary again
+    # AI NOTES
     # -----------------------------------------------------------------
-    ai_notes = (
+    ai_notes_raw = (
         current_item.get("ai_notes")
         or current_item.get("vision_fields", {}).get("raw_summary")
         or current_item.get("vision_summary")
         or explanation
         or ""
     )
-    if isinstance(ai_notes, (dict, list)):
-        ai_notes = json.dumps(ai_notes, ensure_ascii=False)
-    ai_notes = str(ai_notes).strip()
+    ai_notes = clean_ai_notes(ai_notes_raw)
     logger.info(f"[SessionUtils] 🧠 AI Notes restored, length={len(ai_notes)} chars")
 
     # -----------------------------------------------------------------
-    # PRICE SOURCE - use legacy-friendly keys, fallback to mappings
+    # PRICE SOURCE — assign before schema usage
     # -----------------------------------------------------------------
-    tool_results = final_state.get("tool_results", {}) or {}
-    keys = list(tool_results.keys())
-
-    # Use legacy behavior: join raw keys first
-    price_source = ", ".join(keys) or "eBay"
-
-    # Apply readable mappings if possible
-    price_source = (
-        price_source.replace("search_ebay", "eBay")
-        .replace("search_discogs", "Discogs")
-        .replace("search_mycomicshop", "MyComicShop")
-        .replace("search_gocollect", "GoCollect")
-        .replace("search_tcgplayer", "TCGPlayer")
-    )
-
-    # Filter out temporary LangGraph tool IDs like "Toolu 1"
-    if "Toolu" in price_source:
-        mapped = []
-        for k in keys:
-            lk = k.lower()
-            if "ebay" in lk:
-                mapped.append("eBay")
-            elif "discogs" in lk:
-                mapped.append("Discogs")
-            elif "comic" in lk:
-                mapped.append("MyComicShop")
-            elif "gocollect" in lk:
-                mapped.append("GoCollect")
-            elif "tcg" in lk:
-                mapped.append("TCGPlayer")
-        price_source = ", ".join(sorted(set(mapped))) or "eBay"
-
-        # -----------------------------------------------------------------
-        # COMIC
-        # -----------------------------------------------------------------
-        if item_type == "comic":
-            result.update({
-                "Title": current_item.get("display_string") or current_item.get("title") or "Untitled Comic",
-                "Bullet 1": current_item.get("bullet1") or "",
-                "Bullet 2": current_item.get("bullet2") or "",
-                "Bullet 3": current_item.get("bullet3") or "",
-                "Publisher": current_item.get("publisher") or "",
-                "Price Source": price_source,
-                "Base Price": formatted_price,
-                "Condition": current_item.get("condition") or "",
-                "Price": formatted_price,
-                "Inventory #": current_item.get("inventory_number") or "",
-                "Barcode": current_item.get("barcode") or "",
-                "AI Notes": ai_notes,
-            })
+    price_source = extract_price_sources(final_state.get("tool_results", {}))
+    logger.info(f"[SessionUtils] 💰 Price sources: {price_source}")
 
     # -----------------------------------------------------------------
-    # CARD
+    # COMMON FIELD SET
     # -----------------------------------------------------------------
+    common_fields = {
+        "Price Source": price_source,
+        "Base Price": formatted_price,
+        "Condition": current_item.get("condition") or "",
+        "Price": formatted_price,
+        "Inventory #": current_item.get("inventory_number") or "",
+        "Barcode": current_item.get("barcode") or "",
+        "AI Notes": ai_notes,
+    }
+
+    # -----------------------------------------------------------------
+    # ITEM TYPE BRANCHES
+    # -----------------------------------------------------------------
+    if item_type == "comic":
+        result.update({
+            "Title": current_item.get("display_string") or current_item.get("title") or "Untitled Comic",
+            "Bullet 1": current_item.get("bullet1") or "",
+            "Bullet 2": current_item.get("bullet2") or "",
+            "Bullet 3": current_item.get("bullet3") or "",
+            "Publisher": current_item.get("publisher") or "",
+            **common_fields,
+        })
+
     elif item_type == "card":
         result.update({
             "Title": current_item.get("display_string") or current_item.get("title") or "Trading Card",
@@ -156,18 +132,9 @@ def build_review_fields(final_state: Dict[str, Any], item_type: str) -> Dict[str
             "Set": current_item.get("set_name") or "",
             "Number": current_item.get("card_number") or "",
             "Rarity": current_item.get("rarity") or "",
-            "Price Source": price_source,
-            "Base Price": formatted_price,
-            "Condition": current_item.get("condition") or "",
-            "Price": formatted_price,
-            "Inventory #": current_item.get("inventory_number") or "",
-            "Barcode": current_item.get("barcode") or "",
-            "AI Notes": ai_notes,
+            **common_fields,
         })
 
-    # -----------------------------------------------------------------
-    # RECORD
-    # -----------------------------------------------------------------
     elif item_type == "record":
         result.update({
             "Title": current_item.get("display_string") or current_item.get("title") or "Vinyl Record",
@@ -178,18 +145,9 @@ def build_review_fields(final_state: Dict[str, Any], item_type: str) -> Dict[str
             "Bullet 1": current_item.get("bullet1") or "",
             "Bullet 2": current_item.get("bullet2") or "",
             "Bullet 3": current_item.get("bullet3") or "",
-            "Price Source": price_source,
-            "Base Price": formatted_price,
-            "Condition": current_item.get("condition") or "",
-            "Price": formatted_price,
-            "Inventory #": current_item.get("inventory_number") or "",
-            "Barcode": current_item.get("barcode") or "",
-            "AI Notes": ai_notes,
+            **common_fields,
         })
 
-    # -----------------------------------------------------------------
-    # ANYTHING
-    # -----------------------------------------------------------------
     else:
         result.update({
             "Title": current_item.get("display_string") or current_item.get("title") or "Misc Item",
@@ -200,13 +158,7 @@ def build_review_fields(final_state: Dict[str, Any], item_type: str) -> Dict[str
             "Bullet 1": current_item.get("bullet1") or "",
             "Bullet 2": current_item.get("bullet2") or "",
             "Bullet 3": current_item.get("bullet3") or "",
-            "Price Source": price_source,
-            "Base Price": formatted_price,
-            "Condition": current_item.get("condition") or "",
-            "Price": formatted_price,
-            "Inventory #": current_item.get("inventory_number") or "",
-            "Barcode": current_item.get("barcode") or "",
-            "AI Notes": ai_notes,
+            **common_fields,
         })
 
     # -----------------------------------------------------------------
@@ -226,6 +178,7 @@ def build_review_fields(final_state: Dict[str, Any], item_type: str) -> Dict[str
 # Pipeline Runner
 # ---------------------------------------------------------------------
 async def run_pricing_pipeline(graph, user_id: str, image_b64: str, item_type: str) -> Dict[str, Any]:
+    """Execute LangGraph pipeline and build review fields."""
     session_id = get_or_create_session(user_id)
     messages = [
         HumanMessage(
@@ -246,7 +199,7 @@ async def run_pricing_pipeline(graph, user_id: str, image_b64: str, item_type: s
     logger.info(f"[Session] ▶️ Starting pipeline for {user_id}, session {session_id}")
     result = await graph.ainvoke(state)
 
-    # Prevent nested tool details from being dumped into review
+    # Filter out nested tool details
     result["tool_results"] = {
         k: v for k, v in (result.get("tool_results") or {}).items() if isinstance(v, dict)
     }
@@ -266,6 +219,7 @@ async def run_pricing_pipeline(graph, user_id: str, image_b64: str, item_type: s
 # Async Entry Point
 # ---------------------------------------------------------------------
 def price_item_from_image(graph, user_id: str, image_bytes: bytes, item_type: str) -> Dict[str, Any]:
+    """Sync wrapper for async pipeline, safe for UI threads."""
     import nest_asyncio
     try:
         image_b64 = preprocess_image(image_bytes)
