@@ -177,6 +177,15 @@ async def valuation_node(state: Dict[str, Any]) -> Dict[str, Any]:
     else:
         base_price = apply_booth_rounding(base_price)
 
+    # ---------------------------------------------------------------------
+    # ✅ Tool Summary Logging (after valuation)
+    # ---------------------------------------------------------------------
+    from utils.normalizers import extract_price_sources
+
+    # Extract readable sources from tool results
+    tool_summary = extract_price_sources(state.get("tool_results", {}))
+    logger.info(f"[ValuationNode] 🧾 Tools used: {tool_summary}")
+
     result = {
         "final_price": float(base_price),
         "source_summary": {

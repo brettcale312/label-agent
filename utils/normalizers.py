@@ -45,9 +45,10 @@ def clean_ai_notes(ai_notes_raw: Any) -> str:
 def extract_price_sources(tool_results: Dict[str, Any]) -> str:
     """
     Extracts human-readable price source names from LangGraph tool_results.
-    Handles both named keys (e.g., 'ebay', 'mycomicshop') and unnamed nodes ('toolu_1')
-    by inspecting internal 'source' or 'name' fields in the values.
+    Handles both named keys (e.g., 'search_ebay', 'search_pricecharting_tool')
+    and unnamed nodes ('toolu_1') by inspecting internal fields.
     """
+
     if not tool_results:
         logger.debug("[PriceSource] No tool_results found → default to eBay")
         return "eBay"
@@ -55,51 +56,61 @@ def extract_price_sources(tool_results: Dict[str, Any]) -> str:
     readable: List[str] = []
     debug_map: Dict[str, str] = {}
 
+    # Known tool name mapping
+    TOOL_MAP = {
+        "search_ebay": "eBay",
+        "search_mycomicshop": "MyComicShop",
+        "search_discogs": "Discogs",
+        "search_keepa_tool": "Keepa",
+        "search_keepa_smart_tool": "Keepa",
+        "search_pricecharting_tool": "PriceCharting",  # ✅ Added
+        "search_gocollect_tool": "GoCollect",
+        "search_heritage_tool": "Heritage",
+        "smart_search": "SmartSearch",
+    }
+
     for raw_name, raw_value in tool_results.items():
         lname = raw_name.lower()
         match = None
 
-        # 1️⃣ First: check key name
-        if "ebay" in lname:
-            match = "eBay"
-        elif "discogs" in lname:
-            match = "Discogs"
-        elif "comic" in lname:
-            match = "MyComicShop"
-        elif "gocollect" in lname:
-            match = "GoCollect"
-        elif "tcg" in lname:
-            match = "TCGPlayer"
-        elif "toolu" in lname or "internal" in lname:
-            # 2️⃣ Second: infer from value content
-            if isinstance(raw_value, dict):
-                src = (
-                    str(raw_value.get("source"))
-                    or str(raw_value.get("market"))
-                    or str(raw_value.get("name"))
-                    or ""
-                ).lower()
+        # 1️⃣ Try direct map lookup
+        for key, display in TOOL_MAP.items():
+            if key in lname:
+                match = display
+                break
 
-                if "ebay" in src:
-                    match = "eBay"
-                elif "discogs" in src:
-                    match = "Discogs"
-                elif "comic" in src:
-                    match = "MyComicShop"
-                elif "gocollect" in src:
-                    match = "GoCollect"
-                elif "tcg" in src:
-                    match = "TCGPlayer"
-            else:
-                match = None
+        # 2️⃣ If not matched, infer from value content
+        if not match and isinstance(raw_value, dict):
+            src = (
+                str(raw_value.get("source"))
+                or str(raw_value.get("market"))
+                or str(raw_value.get("name"))
+                or ""
+            ).lower()
+            for key, display in TOOL_MAP.items():
+                if key.replace("search_", "").replace("_tool", "") in src:
+                    match = display
+                    break
 
-        # 3️⃣ Fallback to name/titlecase
+        # 3️⃣ Fallback: title-case the raw key if nothing else
         if not match and "toolu" not in lname:
             match = raw_name.replace("_", " ").title()
 
-        if match:
+        # 4️⃣ Validate that the result actually has numeric data
+        if isinstance(raw_value, dict):
+            median = raw_value.get("median") or raw_value.get("avg") or raw_value.get("mean") or 0
+            try:
+                numeric_val = float(median)
+            except (TypeError, ValueError):
+                numeric_val = 0
+        else:
+            numeric_val = 0
+
+        if match and numeric_val > 0:
             readable.append(match)
             debug_map[raw_name] = match
+        elif match:
+            debug_map[raw_name] = f"{match} (no data)"
         else:
             debug_map[raw_name] = "UNMATCHED"
 
