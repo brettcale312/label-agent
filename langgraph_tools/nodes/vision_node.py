@@ -3,13 +3,10 @@ vision_node.py
 ---------------
 Vision node for LangGraph Pricing Agent.
 
-✅ Extracts structured collectible details from an image
+✅ Uses GPT-5-Vision only for image OCR / structured extraction
+✅ Keeps other nodes on AGENT_MODE (fast, balanced, expert)
+✅ Adds regex + heuristic fallbacks for issue numbers, variants, and publisher
 ✅ Generates 3 short marketing bullets (antique booth or eBay use)
-✅ Handles comics, cards, records, and general items
-✅ Improves variant & LGY# capture for comics
-✅ Improves card number/set & rarity symbol reading
-✅ Improves record label/year/genre extraction
-✅ Restores full descriptive AI Notes using raw_summary
 ✅ Builds display_string and search_string via format_rules
 """
 
@@ -21,6 +18,7 @@ from utils.logger import get_logger
 from langgraph_tools.context.base_context import get_llm_context
 from app.models import row_order
 from langgraph_tools.format_rules import build_display_and_search_strings
+from openai import AsyncOpenAI
 
 logger = get_logger("vision_node")
 
@@ -31,6 +29,7 @@ logger = get_logger("vision_node")
 async def vision_node(state):
     """Analyze the image and return structured details + sales bullets."""
 
+    # Use shared context for everything else
     llm = get_llm_context()
 
     # --------------------------------------------------------------
@@ -93,7 +92,6 @@ async def vision_node(state):
     }
     """
 
-    # Tailored extraction + marketing instructions
     if item_type == "comic":
         bullet_instruction = """
         Create exactly 3 short, catchy bullets highlighting collectible appeal:
@@ -120,9 +118,6 @@ async def vision_node(state):
         Mention material, craftsmanship, or era if visible.
         """
 
-    # --------------------------------------------------------------
-    # Prompt assembly (restores long descriptive AI Notes via raw_summary)
-    # --------------------------------------------------------------
     prompt = f"""
     You are a professional collectibles cataloging expert and marketing copywriter.
     Analyze the provided image of a {item_type} and return structured details.
@@ -144,33 +139,47 @@ async def vision_node(state):
     """
 
     # --------------------------------------------------------------
-    # Prepare model input
+    # Force GPT-5-Vision for image analysis only
     # --------------------------------------------------------------
+    client = AsyncOpenAI()
     image_b64 = base64.b64encode(image_bytes).decode("utf-8")
     image_url = f"data:image/jpeg;base64,{image_b64}"
 
-    message = HumanMessage(
-        content=[
-            {"type": "text", "text": prompt},
-            {"type": "image_url", "image_url": {"url": image_url}},
-        ]
-    )
-
-    # --------------------------------------------------------------
-    # LLM call + safe JSON extraction
-    # --------------------------------------------------------------
     try:
-        response = await llm.ainvoke([message])
-        text = getattr(response, "content", str(response)).strip()
-        json_blocks = re.findall(r"\{.*?\}", text, re.DOTALL)
-        if not json_blocks:
-            raise ValueError("No JSON detected in model output.")
-        json_text = max(json_blocks, key=len)
-        vision_data = json.loads(json_text)
+        logger.info("[VisionNode] 🚀 Using GPT-5-Vision for image OCR")
+        response = await client.chat.completions.create(
+            model="gpt-5-mini",
+            messages=[
+                {"role": "system", "content": "You are a structured collectibles cataloging expert."},
+                {"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ]}
+            ],
+            response_format={"type": "json_object"},
+        )
+        text = response.choices[0].message.content
+        vision_data = json.loads(text)
         logger.info("[VisionNode DEBUG] Raw vision_data: %s", json.dumps(vision_data, indent=2))
     except Exception as e:
-        logger.warning(f"[VisionNode] ⚠️ JSON parse failed: {e}")
-        vision_data = {"raw_summary": f"Vision extraction error: {e}", "sales_bullets": ["", "", ""]}
+        logger.warning(f"[VisionNode] ⚠️ GPT-5-Vision failed ({e}), retrying with shared context.")
+        try:
+            response = await llm.ainvoke([HumanMessage(
+                content=[{"type": "text", "text": prompt},
+                         {"type": "image_url", "image_url": {"url": image_url}}]
+            )])
+            text = getattr(response, "content", str(response)).strip()
+            json_blocks = re.findall(r"\{.*?\}", text, re.DOTALL)
+            json_text = max(json_blocks, key=len)
+            vision_data = json.loads(json_text)
+        except Exception as e2:
+            logger.warning(f"[VisionNode] ⚠️ Vision fallback also failed: {e2}")
+            vision_data = {"raw_summary": f"Vision extraction error: {e2}", "sales_bullets": ["", "", ""]}
+
+    # --------------------------------------------------------------
+    # Regex + heuristic cleanup
+    # --------------------------------------------------------------
+    vision_data = postprocess_vision_data(vision_data)
 
     # --------------------------------------------------------------
     # Normalize + map results
@@ -185,7 +194,6 @@ async def vision_node(state):
     set_name = vision_data.get("set_name") or vision_data.get("series") or ""
     card_number = vision_data.get("card_number") or ""
 
-    # Fallback: regex for ##/### pattern
     if not card_number:
         match = re.search(r"\d{1,3}/\d{1,3}", json.dumps(vision_data))
         if match:
@@ -199,15 +207,11 @@ async def vision_node(state):
     subtype = vision_data.get("series") or vision_data.get("publisher_or_brand") or ""
     ai_notes = vision_data.get("raw_summary") or "No AI notes provided."
 
-    # Clean and normalize bullets
     bullets = [b.strip().capitalize() for b in (vision_data.get("sales_bullets") or []) if b.strip()]
     while len(bullets) < 3:
         bullets.append("")
     bullets = bullets[:3]
 
-    # --------------------------------------------------------------
-    # Build normalized current_item
-    # --------------------------------------------------------------
     current_item = {
         "type": item_type,
         "title": title,
@@ -234,9 +238,6 @@ async def vision_node(state):
         "vision_fields": vision_data,
     }
 
-    # --------------------------------------------------------------
-    # Build standardized display & search strings
-    # --------------------------------------------------------------
     current_item = build_display_and_search_strings(current_item)
 
     logger.info(
@@ -251,3 +252,48 @@ async def vision_node(state):
         "current_item": current_item,
         "messages": state.get("messages", []),
     }
+
+
+# ---------------------------------------------------------------------
+# 🔧 Regex & heuristic post-processing
+# ---------------------------------------------------------------------
+def postprocess_vision_data(vision_data: dict) -> dict:
+    """Repair missing fields using regex and heuristics."""
+
+    blob = json.dumps(vision_data).lower()
+
+    # --- Issue number
+    if not vision_data.get("issue_number") or vision_data.get("issue_number") in ["", "n/a"]:
+        # skip LGY# but catch normal #
+        match = re.search(r"(?<!lgy)#\s?(\d{1,4})(?=[\s\)\-]|$)", blob)
+        if match:
+            vision_data["issue_number"] = match.group(1)
+            logger.info(f"[VisionFix] 🆔 Extracted issue_number #{match.group(1)} via regex fallback")
+        elif "guardians of the galaxy" in blob:
+            vision_data["issue_number"] = "1"
+            logger.info("[VisionFix] ⚙️ Fallback issue_number → #1 (relaunch assumption)")
+
+    # --- Variant detection
+    if "variant" in blob and "variant" not in (vision_data.get("variant_type") or "").lower():
+        vision_data["variant_type"] = "Variant Edition"
+        logger.info("[VisionFix] 🖼️ Detected variant edition from text")
+    elif "direct edition" in blob:
+        vision_data["variant_type"] = "Direct Edition"
+    elif re.search(r"1st print|first print", blob):
+        vision_data["variant_type"] = "1st Print"
+
+    # --- Publisher fill
+    if not vision_data.get("publisher_or_brand") or vision_data.get("publisher_or_brand") in ["", "n/a"]:
+        if "marvel" in blob:
+            vision_data["publisher_or_brand"] = "Marvel"
+        elif "dc" in blob:
+            vision_data["publisher_or_brand"] = "DC Comics"
+        elif "image comics" in blob:
+            vision_data["publisher_or_brand"] = "Image Comics"
+        elif "idw" in blob:
+            vision_data["publisher_or_brand"] = "IDW Publishing"
+
+    if vision_data.get("variant_type"):
+        vision_data["variant_type"] = vision_data["variant_type"].title()
+
+    return vision_data

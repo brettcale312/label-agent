@@ -16,6 +16,7 @@ import aiohttp
 import numpy as np
 from langchain_core.tools import tool
 from ebay_utils.auth import get_ebay_access_token
+from .value_cleaners import sanitize_prices  # ✅ shared sanitizer
 
 # ---------------------------------------------------------------------
 # Logger Setup
@@ -49,18 +50,6 @@ def _filter_irrelevant(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if not any(bad in title for bad in banned_keywords):
             filtered.append(i)
     return filtered
-
-
-def _remove_outliers(prices: List[float]) -> List[float]:
-    """Trim outliers using the IQR method (1.5×IQR rule)."""
-    if len(prices) < 5:
-        return prices
-    q1 = np.percentile(prices, 25)
-    q3 = np.percentile(prices, 75)
-    iqr = q3 - q1
-    lower_bound = q1 - 1.5 * iqr
-    upper_bound = q3 + 1.5 * iqr
-    return [p for p in prices if lower_bound <= p <= upper_bound]
 
 
 def _detect_category(query: str, category_hint: Optional[str] = None) -> Dict[str, Optional[str]]:
@@ -203,15 +192,17 @@ async def search_ebay(query: str, sold: bool = False, category_hint: Optional[st
         logger.info(f"[eBayTool] No valid prices found for '{refined_query}' after filtering.")
         return {"source": "eBay", "median_price": None, "sample_count": 0, "raw": items[:5]}
 
-    clean_prices = _remove_outliers(prices)
-    if len(clean_prices) != len(prices):
-        logger.info(f"[eBayTool] 🔎 Removed {len(prices)-len(clean_prices)} outlier(s).")
+    # ✅ Centralized cleaning and outlier removal
+    prices = sanitize_prices(prices, query=refined_query)
 
-    prices = sorted(clean_prices)
+    if not prices:
+        logger.info(f"[eBayTool] All prices removed as outliers for '{refined_query}'.")
+        return {"source": "eBay", "median_price": None, "sample_count": 0}
+
     median = round(np.median(prices), 2)
     avg = round(float(np.mean(prices)), 2)
 
-    logger.info(f"[eBayTool] 💰 Median ${median} (avg ${avg}) from {len(prices)} listings after filtering.")
+    logger.info(f"[eBayTool] 💰 Median ${median} (avg ${avg}) from {len(prices)} listings after sanitization.")
     print(f"💰 eBay median for '{refined_query}': ${median} (avg ${avg}) from {len(prices)} listings.", flush=True)
 
     if DEBUG_EBAY:
@@ -235,7 +226,7 @@ async def search_ebay(query: str, sold: bool = False, category_hint: Optional[st
 
 
 # ---------------------------------------------------------------------
-# Local test
+# Local test (manual run)
 # ---------------------------------------------------------------------
 if __name__ == "__main__":
     async def _test():
@@ -249,7 +240,7 @@ if __name__ == "__main__":
         for q, hint in tests:
             print("\n====================================")
             print(f"Testing: {q} (hint={hint})")
-            result = await search_ebay(q, category_hint=hint)
+            result = await search_ebay.arun(q, category_hint=hint)   # ✅ .arun instead of direct call
             print("Result:", result)
 
     asyncio.run(_test())

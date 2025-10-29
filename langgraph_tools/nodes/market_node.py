@@ -81,25 +81,39 @@ async def market_node(state):
     logger.info(f"[MarketNode] 🔎 Query context: {query_context}")
 
     # -----------------------------------------------------------------
-    # Build the LLM prompt for tool selection
+    # Build the LLM prompt for tool selection (balanced priorities)
     # -----------------------------------------------------------------
     market_prompt = f"""
     You are the market intelligence model for collectibles.
-    Your goal is to select which pricing tools to call
-    based on the item description and category.
+    Choose the most reliable pricing tools for this item based on its category.
 
     Item info: "{query_context}"
     Category: {category_hint}
 
-    Available tools:
-      - search_ebay (use for all collectibles)
-      - search_mycomicshop (for comics)
-      - search_discogs (for vinyl records)
+    🔧 Available tools:
+      - search_pricecharting_tool → Primary for trading cards (Pokemon, MTG, YuGiOh), comics, video games, and Funko Pops.
+      - search_mycomicshop → Secondary for comics, use alongside PriceCharting when available.
+      - search_discogs → Use for vinyl records to retrieve structured catalog data.
+      - search_ebay → Use for all collectibles as a broad market cross-check or when Discogs/PriceCharting have sparse data.
+      - search_keepa_smart_tool → Optional confirmation for Amazon-listed items (toys, games, or collectibles).
+
+    💡 Guidance:
+      • Comics, trading cards, Funko Pops, and video games → Always include search_pricecharting_tool.
+      • Vinyl records → Use both search_discogs and search_ebay.
+          - If Discogs returns many listings, treat it as the stronger signal.
+          - If Discogs returns few listings, rely more on eBay.
+      • Toys or collectibles without a clear category → Pair search_ebay with search_keepa_smart_tool.
+      • When PriceCharting returns only one "loose" value, still treat it as reliable — it's aggregated from many transactions.
+      • Prefer specialized tools first, then supplement with eBay for broader coverage.
+      • Never exclude a strong specialized source just because eBay data exists.
 
     Respond ONLY with tool call syntax, one per line, e.g.:
-      search_ebay("Spider-Man #31 Near Mint variant cover")
-      search_mycomicshop("Spider-Man #31 Near Mint variant cover")
-      search_discogs("Chicago Transit Authority - Chicago Vinyl Record")
+      search_pricecharting_tool("Miraidon EX 253/198 Pokemon card")
+      search_ebay("Miraidon EX 253/198 Pokemon card")
+      search_discogs("Pink Floyd - The Wall vinyl LP")
+      search_ebay("Pink Floyd - The Wall vinyl LP")
+      search_mycomicshop("Amazing Spider-Man #300 Near Mint")
+      search_pricecharting_tool("Amazing Spider-Man #300 Near Mint")
     """
 
     try:

@@ -1,10 +1,10 @@
 """
 reasoning_node.py
 -----------------
-Compares and interprets market data from eBay, MyComicShop, and Discogs
-depending on the item category.
+Compares and interprets market data from eBay, MyComicShop, Discogs, PriceCharting,
+and Keepa depending on the item category.
 
-✅ Reads from tool_results (not market_data)
+✅ Reads from tool_results
 ✅ Normalizes numeric values
 ✅ Applies category-specific weighting heuristics
 ✅ Optionally refines with LLM context
@@ -26,33 +26,26 @@ logger = get_logger("reasoning_node")
 # ---------------------------------------------------------------------
 async def reasoning_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Analyze eBay / Discogs / MyComicShop pricing data and assign source weights.
+    Analyze multi-source pricing data and assign source weights.
 
-    Expected input:
-      state["tool_results"] = {
-          "tool_1": {"source": "eBay", "median": 15.0, "average": 16.2, "sample_count": 35},
-          "tool_2": {"source": "Discogs", "median": 12.0, "average": 13.0, "sample_count": 10},
-          "tool_3": {"source": "MyComicShop", "median": 3.99, "average": 7.99, "sample_count": 3}
-      }
-
-    Returns:
-      {
-        "market_data": {...},   # normalized numeric results
-        "reasoning": {...},     # weights + comment
-        "current_item": {...}
-      }
+    Supports:
+      - eBay
+      - Discogs
+      - MyComicShop
+      - PriceCharting
+      - Keepa (standard or smart)
     """
-    
+
     llm = get_llm_context()
     tool_results = state.get("tool_results", {}) or {}
     current_item = state.get("current_item", {}) or {}
     title = current_item.get("title", "Unknown Item")
-    item_type = (current_item.get("type") or "").lower()
+    category_hint = (current_item.get("category_hint") or "").lower()
 
-    logger.info(f"🧠 Starting reasoning node for {title}")
+    logger.info(f"🧠 Starting reasoning node for {title} [{category_hint}]")
 
     # -----------------------------------------------------------------
-    # Normalize tool data → standard dict by source name
+    # Normalize tool data
     # -----------------------------------------------------------------
     market_data = {}
     for _, result in tool_results.items():
@@ -68,17 +61,16 @@ async def reasoning_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "sample_count": int(result.get("samples") or result.get("sample_count") or 0),
         }
 
-    # -----------------------------------------------------------------
-    # Handle missing or incomplete data
-    # -----------------------------------------------------------------
     if not market_data:
         logger.warning("⚠️ No valid market data found in tool_results.")
         return dict(
             state,
             market_data={},
             reasoning={
+                "pricecharting_weight": 0.0,
                 "ebay_weight": 1.0,
                 "discogs_weight": 0.0,
+                "keepa_weight": 0.0,
                 "mcs_weight": 0.0,
                 "comment": "No valid data found. Defaulted to eBay-only weighting.",
             },
@@ -86,69 +78,92 @@ async def reasoning_node(state: Dict[str, Any]) -> Dict[str, Any]:
         )
 
     # -----------------------------------------------------------------
-    # Category-specific heuristics
+    # Extract individual sources
     # -----------------------------------------------------------------
     ebay = market_data.get("ebay", {})
     discogs = market_data.get("discogs", {})
     mcs = market_data.get("mycomicshop", {})
+    pc = market_data.get("pricecharting", {})
+    keepa = market_data.get("keepa (amazon)", {}) or market_data.get("keepa", {})
 
-    ebay_med = ebay.get("median", 0)
-    discogs_med = discogs.get("median", 0)
-    mcs_med = mcs.get("median", 0)
-    ebay_count = ebay.get("sample_count", 0)
-    discogs_count = discogs.get("sample_count", 0)
-    mcs_count = mcs.get("sample_count", 0)
+    # Extract medians & counts
+    ebay_med, ebay_count = ebay.get("median", 0), ebay.get("sample_count", 0)
+    discogs_med, discogs_count = discogs.get("median", 0), discogs.get("sample_count", 0)
+    mcs_med, mcs_count = mcs.get("median", 0), mcs.get("sample_count", 0)
+    pc_med, pc_count = pc.get("median", 0), pc.get("sample_count", 0)
+    keepa_med, keepa_count = keepa.get("median", 0), keepa.get("sample_count", 0)
 
-    e_w = d_w = mcs_w = 0.0
+    # -----------------------------------------------------------------
+    # Category-specific heuristic weighting
+    # -----------------------------------------------------------------
+    e_w = d_w = mcs_w = pc_w = k_w = 0.0
 
-    # --- COMICS ---
-    if item_type == "comic":
-        if mcs_med and ebay_med:
-            e_w, mcs_w = 0.6, 0.4
+    # --- TRADING CARDS / COMICS / VIDEO GAMES / FUNKO ---
+    if category_hint in ("card", "comic", "video game", "funko", "collectible"):
+        if pc_med:
+            pc_w = 0.7
+            e_w = 0.2 if ebay_med else 0.0
+            mcs_w = 0.1 if mcs_med else 0.0
         elif mcs_med:
-            e_w, mcs_w = 0.3, 0.7
+            pc_w = 0.0
+            mcs_w = 0.6
+            e_w = 0.4 if ebay_med else 0.0
         else:
-            e_w, mcs_w = 1.0, 0.0
-        d_w = 0.0
+            e_w = 1.0
 
     # --- RECORDS / VINYL ---
-    elif item_type in ("record", "vinyl"):
+    elif category_hint in ("record", "vinyl"):
         if discogs_med and ebay_med:
-            e_w, d_w = 0.6, 0.4
+            # if Discogs sample count small, bias toward eBay
+            if discogs_count < 5 and ebay_count >= 10:
+                d_w, e_w = 0.3, 0.7
+            else:
+                d_w, e_w = 0.5, 0.5
         elif discogs_med:
-            e_w, d_w = 0.3, 0.7
-        else:
-            e_w, d_w = 1.0, 0.0
-        mcs_w = 0.0
+            d_w = 1.0
+        elif ebay_med:
+            e_w = 1.0
 
-    # --- ALL OTHERS ---
+    # --- TOYS / AMAZON-TYPE COLLECTIBLES ---
+    elif category_hint in ("toy", "sealed", "modern collectible"):
+        if keepa_med and ebay_med:
+            k_w, e_w = 0.6, 0.4
+        elif keepa_med:
+            k_w = 1.0
+        else:
+            e_w = 1.0
+
+    # --- DEFAULT / UNKNOWN ---
     else:
         e_w = 1.0
-        d_w = mcs_w = 0.0
 
     # -----------------------------------------------------------------
-    # Optional refinement via LLM (keeps weights same type)
+    # Optional LLM refinement
     # -----------------------------------------------------------------
     reasoning_prompt = f"""
-    You are a collectibles pricing expert.
-    Review these numeric medians and sample counts and decide if the default
-    source weighting below seems reasonable.
+    You are an experienced collectibles appraiser.
+    The following sources provided median prices and sample counts:
 
-    Market data:
     {json.dumps(market_data, indent=2)}
 
-    Item type: {item_type}
+    Category: {category_hint}
 
-    Current weights:
+    Current heuristic weights:
+      PriceCharting = {pc_w}
       eBay = {e_w}
       Discogs = {d_w}
       MyComicShop = {mcs_w}
+      Keepa = {k_w}
 
-    Respond in valid JSON ONLY:
+    Review the data and adjust slightly if needed.
+    Prioritize data reliability over sample count when applicable.
+    Respond ONLY in valid JSON:
     {{
+      "pricecharting_weight": float,
       "ebay_weight": float,
       "discogs_weight": float,
       "mcs_weight": float,
+      "keepa_weight": float,
       "comment": str
     }}
     """
@@ -161,34 +176,36 @@ async def reasoning_node(state: Dict[str, Any]) -> Dict[str, Any]:
             raise ValueError("No JSON block detected in LLM output.")
         reasoning_json = json.loads(max(json_blocks, key=len))
 
+        pc_w = float(reasoning_json.get("pricecharting_weight", pc_w))
         e_w = float(reasoning_json.get("ebay_weight", e_w))
         d_w = float(reasoning_json.get("discogs_weight", d_w))
         mcs_w = float(reasoning_json.get("mcs_weight", mcs_w))
-        comment = reasoning_json.get("comment", "Weights derived via heuristic + LLM refinement.")
+        k_w = float(reasoning_json.get("keepa_weight", k_w))
+        comment = reasoning_json.get("comment", "Weights refined via LLM.")
     except Exception as e:
         logger.warning(f"[ReasoningNode] ⚠️ LLM refinement skipped: {e}")
         comment = "Weights derived heuristically (LLM fallback)."
 
-    # -----------------------------------------------------------------
-    # Normalize to total 1.0
-    # -----------------------------------------------------------------
-    total = e_w + d_w + mcs_w
+    # Normalize
+    total = e_w + d_w + mcs_w + pc_w + k_w
     if total == 0:
-        e_w, d_w, mcs_w = 1.0, 0.0, 0.0
-    else:
-        e_w, d_w, mcs_w = e_w / total, d_w / total, mcs_w / total
+        e_w = 1.0
+        total = 1.0
 
     reasoning = {
-        "ebay_weight": round(e_w, 2),
-        "discogs_weight": round(d_w, 2),
-        "mcs_weight": round(mcs_w, 2),
+        "pricecharting_weight": round(pc_w / total, 2),
+        "ebay_weight": round(e_w / total, 2),
+        "discogs_weight": round(d_w / total, 2),
+        "mcs_weight": round(mcs_w / total, 2),
+        "keepa_weight": round(k_w / total, 2),
         "comment": comment,
     }
 
     logger.info(
-        f"✅ Reasoning complete: eBay={e_w:.2f}, Discogs={d_w:.2f}, MyComicShop={mcs_w:.2f}"
+        f"✅ Reasoning complete | PriceCharting={pc_w:.2f}, eBay={e_w:.2f}, "
+        f"Discogs={d_w:.2f}, MyComicShop={mcs_w:.2f}, Keepa={k_w:.2f}"
     )
-    
+
     return {
         **state,
         "market_data": market_data,
@@ -201,7 +218,6 @@ async def reasoning_node(state: Dict[str, Any]) -> Dict[str, Any]:
 # Helper
 # ---------------------------------------------------------------------
 def _safe_float(value):
-    """Safely convert any numeric-like value to float."""
     try:
         if value is None or value == "":
             return 0.0

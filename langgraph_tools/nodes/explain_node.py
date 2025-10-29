@@ -1,12 +1,12 @@
 """
 explain_node.py
 ---------------
-Generates a concise, human-readable explanation of how the final price
-was chosen — summarizing market sources, reasoning, and adjustments.
+Generates detailed or concise AI Notes explaining how the final price
+was determined — with condition context, price range, and market sources.
 
-✅ Uses persistent LLM context (from base_context)
-✅ Mirrors the legacy "AI Notes" logic
-✅ Returns label-ready explanation text
+✅ Smart $low–$high or “around $X” phrasing
+✅ Two modes: detailed (multi-paragraph) or concise (tag-length)
+✅ Uses medians + weights to describe reasoning naturally
 """
 
 from typing import Dict, Any
@@ -16,29 +16,37 @@ from langgraph_tools.context.base_context import get_llm_context
 
 logger = get_logger("explain_node")
 
+# ---------------------------------------------------------------------
+# CONFIGURATION
+# ---------------------------------------------------------------------
+DETAILED_EXPLANATION = True  # Toggle to False for short version
+
+
+# ---------------------------------------------------------------------
+# Helper: format price range naturally
+# ---------------------------------------------------------------------
+def _format_price_range(medians, final_price: float) -> str:
+    if not medians:
+        return f"${final_price:.0f}"
+    low, high = min(medians), max(medians)
+    # Ignore extreme zeros
+    if low <= 0 or high <= 0:
+        return f"${final_price:.0f}"
+    spread = abs(high - low)
+    avg = (low + high) / 2
+    # Tight range → “around $X”
+    if spread / avg <= 0.05:
+        return f"around ${round(avg):,}"
+    # Normal range → "$6–7" or "$15–20"
+    low_fmt = f"{low:,.0f}" if low >= 10 else f"{low:.0f}"
+    high_fmt = f"{high:,.0f}" if high >= 10 else f"{high:.0f}"
+    return f"${low_fmt}–${high_fmt}"
+
 
 # ---------------------------------------------------------------------
 # Explain Node
 # ---------------------------------------------------------------------
 async def explain_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Build a short natural-language summary of the pricing decision.
-
-    Expected state:
-      {
-          "market_data": {...},
-          "reasoning": {...},
-          "valuation": {...},
-          "current_item": {...}
-      }
-
-    Returns:
-      {
-          "explanation": "...",
-          "current_item": {...}
-      }
-    """
-    
     llm = get_llm_context()
 
     market = state.get("market_data") or {}
@@ -46,68 +54,106 @@ async def explain_node(state: Dict[str, Any]) -> Dict[str, Any]:
     valuation = state.get("valuation") or {}
     current_item = state.get("current_item") or {}
 
-    # Extract key fields
     title = (
         current_item.get("title")
         or current_item.get("Title & Issue")
         or "Unknown Item"
     )
-    category = current_item.get("category_hint") or current_item.get("category") or "general"
-    condition = current_item.get("condition", "unspecified")
-    venue = current_item.get("venue", "N/A")
+    category = (
+        current_item.get("category_hint")
+        or current_item.get("category")
+        or "collectible"
+    ).lower()
+    condition = current_item.get("condition", "unspecified").lower()
+    venue = current_item.get("venue", "N/A").lower()
 
     final_price = valuation.get("final_price", 0.0)
     base_price = valuation.get("Base_Price", final_price)
     comment = reasoning.get("comment", "")
-    ebay_weight = reasoning.get("ebay_weight", 0)
-    discogs_weight = reasoning.get("discogs_weight", 0)
 
-    logger.info(f"💬 Generating pricing explanation for {title}")
+    medians = [v.get("median", 0) for v in market.values() if v.get("median")]
+    range_text = _format_price_range(medians, final_price)
+
+    weighted = {k: v for k, v in reasoning.items() if "_weight" in k and v > 0.05}
+    top_sources = ", ".join(
+        s.replace("_weight", "").capitalize()
+        for s in sorted(weighted, key=weighted.get, reverse=True)
+    ) or "market comparisons"
+
+    logger.info(f"💬 Generating {'detailed' if DETAILED_EXPLANATION else 'concise'} AI Notes for {title}")
 
     # -----------------------------------------------------------------
-    # Build prompt
+    # PROMPT BUILDER
     # -----------------------------------------------------------------
-    prompt = f"""
-    You are an expert collectibles appraiser.
+    if DETAILED_EXPLANATION:
+        prompt = f"""
+        You are a professional collectibles appraiser preparing detailed pricing notes.
 
-    Write a short, professional note (under 80 words) suitable for the
-    "AI Notes" field on a vendor price tag.
+        Write 2–4 short paragraphs (120–150 words) explaining how the final price
+        of ${final_price:.2f} was determined.
 
-    Include:
-      - Which data source(s) (eBay, Discogs, MyComicShop, etc.) most influenced pricing
-      - Any condition, artist, or venue adjustments applied
-      - Why the final price (${final_price:.2f}) is fair and realistic for resale
-      - Maintain a confident, vendor-facing tone.
+        Structure:
+          1️⃣ Identification & Condition Check – confirm what the item is and note any condition or packaging factors.
+          2️⃣ Market Value Estimate – summarize comparable prices from {top_sources},
+              noting an approximate market range of {range_text}.
+          3️⃣ Final Valuation – explain how booth/venue and condition adjustments
+              produced the final suggested price of ${final_price:.2f}.
 
-    ---
-    Market Data: {market}
-    Reasoning: eBay={ebay_weight}, Discogs={discogs_weight}, Notes="{comment}"
-    Valuation: base={base_price}, final={final_price}
-    Item Info: {current_item}
-    """
-    #logger.warning(f"[ExplainNode] current_item contents: {current_item}")
+        Keep tone confident and conversational, like a dealer explaining reasoning.
+        Mention sources (PriceCharting, eBay, Discogs, MyComicShop, Keepa) if applicable.
+
+        ---
+        Item: {title}
+        Category: {category}
+        Condition: {condition}
+        Venue: {venue}
+        Market Data: {market}
+        Reasoning: {reasoning}
+        Valuation: base={base_price}, final={final_price}
+        Notes: {comment}
+        """
+    else:
+        prompt = f"""
+        You are an experienced collectibles appraiser.
+
+        Write one concise, professional paragraph (≤80 words) summarizing how
+        the final price of ${final_price:.2f} was determined.
+
+        Include:
+          - Main sources ({top_sources})
+          - A brief market range ({range_text})
+          - Condition and booth/venue factors
+          - Why the final price is realistic for resale
+
+        ---
+        Item: {title}
+        Category: {category}
+        Condition: {condition}
+        Venue: {venue}
+        Market Data: {market}
+        Reasoning: {reasoning}
+        Valuation: base={base_price}, final={final_price}
+        Notes: {comment}
+        """
+
     # -----------------------------------------------------------------
-    # LLM call with graceful fallback
+    # LLM CALL
     # -----------------------------------------------------------------
     try:
         response = await llm.ainvoke([HumanMessage(content=prompt)])
-        text = getattr(response, "content", str(response)).strip().replace("\n", " ")
-
-        # Clean excess punctuation or markdown if present
-        text = text.replace("```json", "").replace("```", "").strip()
-
-        logger.info(f"✅ Explanation generated: {text[:120]}...")
-        explanation = text
-
+        text = getattr(response, "content", str(response)).strip()
+        text = text.replace("```", "").replace("\n", " ").strip()
+        explanation = text[0].upper() + text[1:] if text else "AI Notes unavailable."
+        logger.info(f"✅ Explanation generated: {explanation[:150]}...")
     except Exception as e:
         logger.error(f"❌ Explanation node failed: {e}")
         explanation = f"AI Notes unavailable: {e}"
 
     # -----------------------------------------------------------------
-    # Return full merged state (so downstream or exports have everything)
+    # RETURN MERGED STATE
     # -----------------------------------------------------------------
     return {
-        **state,  # ✅ preserve valuation, reasoning, etc.
+        **state,
         "explanation": explanation,
         "current_item": {
             **current_item,
@@ -119,4 +165,3 @@ async def explain_node(state: Dict[str, Any]) -> Dict[str, Any]:
             "Category": category,
         },
     }
-

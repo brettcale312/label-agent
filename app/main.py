@@ -10,6 +10,15 @@ Handles:
 - Unified schema alignment (3 bullets, Base Price, Price Source)
 """
 
+import sys
+import asyncio
+
+# ---------------------------------------------------------------------
+# 🧠 Windows Python 3.13 fix: ensure Playwright can launch subprocesses
+# ---------------------------------------------------------------------
+if sys.platform.startswith("win"):
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 import os
 import json
 import uuid
