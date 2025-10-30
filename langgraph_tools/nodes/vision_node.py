@@ -3,11 +3,10 @@ vision_node.py
 ---------------
 Vision node for LangGraph Pricing Agent.
 
+✅ Supports multi-image context for GPT-5-Mini (all uploaded angles)
 ✅ Uses GPT-5-Mini exclusively for image OCR / structured extraction
-✅ Keeps other nodes on AGENT_MODE (fast, balanced, expert)
-✅ Adds refined regex + heuristic fallbacks for issue numbers, variants, and publisher
-✅ Generates 3 short marketing bullets (antique booth or eBay use)
-✅ Builds display_string and search_string via format_rules
+✅ Generates 3 marketing bullets
+✅ Preserves legacy regex/heuristic cleanup and unified output
 """
 
 import json
@@ -27,35 +26,33 @@ logger = get_logger("vision_node")
 # Vision Node
 # ---------------------------------------------------------------------
 async def vision_node(state):
-    """Analyze the image and return structured details + sales bullets."""
+    """Analyze one or more images and return structured details + sales bullets."""
 
-    # Use shared context for everything else
     llm = get_llm_context()
 
     # --------------------------------------------------------------
-    # Extract image bytes (from direct bytes or message structure)
+    # ✅ Collect all base64 images from state["messages"]
     # --------------------------------------------------------------
-    image_bytes = state.get("image_bytes")
-    if not image_bytes:
-        messages = state.get("messages", [])
-        if messages and isinstance(messages[0].content, list):
-            for part in messages[0].content:
+    image_urls = []
+    messages = state.get("messages", [])
+    for msg in messages:
+        if isinstance(msg.get("content"), list):
+            for part in msg["content"]:
                 if part.get("type") == "image_url" and "data:image" in part["image_url"].get("url", ""):
-                    try:
-                        b64_data = part["image_url"]["url"].split(",")[1]
-                        image_bytes = base64.b64decode(b64_data)
-                        logger.debug("[VisionNode] ✅ Extracted image bytes from message content.")
-                        break
-                    except Exception as e:
-                        logger.warning(f"[VisionNode] ⚠️ Failed to decode image from message: {e}")
+                    image_urls.append(part["image_url"]["url"])
 
-    item_type = (state.get("item_type") or state.get("current_item", {}).get("type") or "anything").lower()
-    if not image_bytes:
-        logger.warning("[VisionNode] ⚠️ No image bytes in state.")
+    if not image_urls:
+        logger.warning("[VisionNode] ⚠️ No image URLs found in message content.")
         return state
 
+    item_type = (
+        state.get("item_type")
+        or state.get("current_item", {}).get("type")
+        or "anything"
+    ).lower()
+
     # --------------------------------------------------------------
-    # Build schema & prompt
+    # Build schema & contextual prompt
     # --------------------------------------------------------------
     columns = row_order(item_type)
     schema_str = json.dumps(columns, indent=2)
@@ -96,15 +93,13 @@ async def vision_node(state):
         bullet_instruction = """
         Create exactly 3 short, catchy bullets highlighting collectible appeal:
         characters, cover art, first appearances, or variants.
-        Identify variant text near the issue number (e.g., "Variant Edition", "2nd Print")
-        and any codes like "LGY#151" or "Direct Edition".
+        Identify variant text near the issue number (e.g., "Variant Edition", "2nd Print").
         """
     elif item_type == "card":
         bullet_instruction = """
         Create exactly 3 brief bullets (under 8 words) describing card appeal.
         Mention rarity (Common, Rare, Ultra Rare, etc.), holo type, or set.
-        Focus on fine print at the bottom edge for card number (e.g., "032/086")
-        and rarity symbols (★ Rare, ◆ Uncommon, ● Common).
+        Focus on fine print at the bottom edge for card number and rarity symbols.
         """
     elif item_type == "record":
         bullet_instruction = """
@@ -120,47 +115,43 @@ async def vision_node(state):
 
     prompt = f"""
     You are a professional collectibles cataloging expert and marketing copywriter.
-    Analyze the provided image of a {item_type} and return structured details.
+    Analyze the provided images of a {item_type} (front, back, details) and return structured details.
 
     Respond ONLY with valid JSON matching this structure:
     {extended_schema}
 
     Notes:
-    - Extract visible identifiers (titles, numbers, rarity marks, or artist info).
-    - For comics: detect variant text or LGY# codes near the issue number.
-    - For cards: read fine print at bottom for set name, card number, and rarity.
-    - For records: extract artist, album title, label (e.g., Columbia), year, and genre.
-    - Grade condition using collector terms (Near Mint, Very Fine, etc.).
-    - Include a full descriptive "raw_summary" (2–3 sentences) explaining what’s visible,
-      such as variant markings, card holo type, or record label and sleeve details.
-      This text will be shown later as "AI Notes" in the app.
+    - Use all images together (front, back, label, etc.) to improve accuracy.
+    - Detect visible identifiers (titles, numbers, rarity marks, or artist info).
     - {bullet_instruction}
-    - Ensure exactly 3 bullets.
     """
 
     # --------------------------------------------------------------
-    # Use GPT-5-Mini for image analysis
+    # 🧠 GPT-5-Mini Vision API (multi-image)
     # --------------------------------------------------------------
     client = AsyncOpenAI()
-    image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-    image_url = f"data:image/jpeg;base64,{image_b64}"
 
     try:
-        logger.info("[VisionNode] 🚀 Using GPT-5-Mini for image OCR")
+        logger.info(f"[VisionNode] 🚀 Analyzing {len(image_urls)} image(s) with GPT-5-Mini")
+
+        # Build message with all images
+        vision_inputs = [{"type": "text", "text": prompt}]
+        for url in image_urls:
+            vision_inputs.append({"type": "image_url", "image_url": {"url": url}})
+
         response = await client.chat.completions.create(
             model="gpt-5-mini",
             messages=[
                 {"role": "system", "content": "You are a structured collectibles cataloging expert."},
-                {"role": "user", "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": image_url}},
-                ]}
+                {"role": "user", "content": vision_inputs},
             ],
             response_format={"type": "json_object"},
         )
+
         text = response.choices[0].message.content
         vision_data = json.loads(text)
         logger.info("[VisionNode DEBUG] Raw vision_data: %s", json.dumps(vision_data, indent=2))
+
     except Exception as e:
         logger.error(f"[VisionNode] ❌ GPT-5-Mini vision extraction failed: {e}")
         vision_data = {"raw_summary": f"Vision extraction error: {e}", "sales_bullets": ["", "", ""]}
@@ -251,7 +242,7 @@ def postprocess_vision_data(vision_data: dict) -> dict:
 
     blob = json.dumps(vision_data).lower()
 
-    # --- Issue number (skip LGY or legacy identifiers)
+    # --- Issue number
     if not vision_data.get("issue_number") or vision_data["issue_number"] in ["", "n/a"]:
         match = re.search(r"(?<!lgy)[#\s]*(\d{1,4})(?=[\s\)\-]|$)", blob)
         if match:
@@ -264,7 +255,6 @@ def postprocess_vision_data(vision_data: dict) -> dict:
     # --- Variant detection
     if "variant" in blob and "variant" not in (vision_data.get("variant_type") or "").lower():
         vision_data["variant_type"] = "Variant Edition"
-        logger.info("[VisionFix] 🖼️ Detected variant edition from text")
     elif "direct edition" in blob:
         vision_data["variant_type"] = "Direct Edition"
     elif re.search(r"1st print|first print", blob):

@@ -175,37 +175,59 @@ def build_review_fields(final_state: Dict[str, Any], item_type: str) -> Dict[str
 
 
 # ---------------------------------------------------------------------
-# Pipeline Runner
+# Pipeline Runner (Multi-image aware)
 # ---------------------------------------------------------------------
-async def run_pricing_pipeline(graph, user_id: str, image_b64: str, item_type: str) -> Dict[str, Any]:
-    """Execute LangGraph pipeline and build review fields."""
+async def run_pricing_pipeline(
+    graph,
+    user_id: str,
+    image_b64_list: list[str],
+    item_type: str,
+    extra_state: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Execute LangGraph pipeline with one or more images."""
     session_id = get_or_create_session(user_id)
+
+    # If only one image was passed, normalize into list
+    if isinstance(image_b64_list, str):
+        image_b64_list = [image_b64_list]
+
+    # Build multi-image messages
     messages = [
         HumanMessage(
             content=[
                 {"type": "text", "text": f"Please analyze and price this {item_type}."},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
+                *[
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
+                    for img_b64 in image_b64_list
+                ],
             ]
         )
     ]
 
+    # Construct graph state
     state = {
         "messages": messages,
         "session_id": session_id,
         "user_id": user_id,
         "current_item": {"type": item_type},
+        "item_type": item_type,
     }
 
-    logger.info(f"[Session] ▶️ Starting pipeline for {user_id}, session {session_id}")
+    # Merge in any optional extras
+    if extra_state:
+        state.update(extra_state)
+
+    logger.info(f"[Session] ▶️ Starting pipeline for {user_id}, session {session_id}, images={len(image_b64_list)}")
+
+    # Run async LangGraph
     result = await graph.ainvoke(state)
 
-    # Filter out nested tool details
+    # Filter out nested tool data
     result["tool_results"] = {
         k: v for k, v in (result.get("tool_results") or {}).items() if isinstance(v, dict)
     }
 
     review_fields = build_review_fields(result, item_type)
-
     logger.info(f"[Session] ✅ Full pipeline complete for {user_id}")
     return {
         "success": True,
@@ -216,16 +238,33 @@ async def run_pricing_pipeline(graph, user_id: str, image_b64: str, item_type: s
 
 
 # ---------------------------------------------------------------------
-# Async Entry Point
+# Sync Wrapper (Multi-image aware)
 # ---------------------------------------------------------------------
-def price_item_from_image(graph, user_id: str, image_bytes: bytes, item_type: str) -> Dict[str, Any]:
-    """Sync wrapper for async pipeline, safe for UI threads."""
+def price_item_from_image(
+    graph,
+    user_id: str,
+    image_bytes: bytes | list[bytes],
+    item_type: str,
+    extra_state: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Sync wrapper for async pipeline (supports one or multiple images)."""
     import nest_asyncio
     try:
-        image_b64 = preprocess_image(image_bytes)
+        # Normalize to list
+        if isinstance(image_bytes, (bytes, bytearray)):
+            image_bytes = [image_bytes]
+
+        # Preprocess and encode each image
+        image_b64_list = [preprocess_image(b) for b in image_bytes]
 
         async def _runner():
-            return await run_pricing_pipeline(graph, user_id, image_b64, item_type)
+            return await run_pricing_pipeline(
+                graph,
+                user_id,
+                image_b64_list,
+                item_type,
+                extra_state=extra_state,
+            )
 
         try:
             loop = asyncio.get_running_loop()
