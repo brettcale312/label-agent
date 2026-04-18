@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Card Pricer — Print Labels</title>
+  <link href="https://unpkg.com/tabulator-tables@6.2.1/dist/css/tabulator.min.css" rel="stylesheet" />
+  <script src="https://unpkg.com/tabulator-tables@6.2.1/dist/js/tabulator.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #f5f5f5; color: #333; }
+
+    .sidebar {
+      position: fixed; top: 0; left: 0; bottom: 0; width: 240px;
+      background: #1e293b; color: #cbd5e1;
+      display: flex; flex-direction: column;
+    }
+    .main { margin-left: 240px; display: flex; flex-direction: column; min-height: 100vh; }
+    .sidebar-header { padding: 1.2em 1em; border-bottom: 1px solid #334155; }
+    .sidebar-header h1 { font-size: 1em; font-weight: 700; color: white; }
+    .sidebar-header .sub { font-size: 0.75em; color: #94a3b8; margin-top: 0.2em; }
+    .sidebar-nav { padding: 0.75em 0; }
+    .nav-item {
+      display: block; padding: 0.6em 1em;
+      font-size: 0.88em; color: #cbd5e1;
+      cursor: pointer; text-decoration: none;
+      border-left: 3px solid transparent;
+    }
+    .nav-item:hover, .nav-item.active {
+      background: #334155; color: white; border-left-color: #1a73e8;
+    }
+
+    .toolbar {
+      background: white; border-bottom: 1px solid #e0e0e0;
+      padding: 0.75em 1.2em;
+      display: flex; gap: 0.6em; align-items: center; flex-wrap: wrap;
+    }
+    .toolbar h2 { font-size: 1em; font-weight: 700; margin-right: auto; }
+    .btn {
+      background: #f1f5f9; border: 1px solid #cbd5e1;
+      border-radius: 6px; padding: 0.45em 1em;
+      font-size: 0.85em; cursor: pointer; color: #334155;
+    }
+    .btn:hover { background: #e2e8f0; }
+    .btn.primary { background: #1a73e8; border-color: #1a73e8; color: white; }
+    .btn.primary:hover { background: #1558b0; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .info-bar {
+      background: #fffbeb; border-bottom: 1px solid #fde68a;
+      padding: 0.6em 1.2em; font-size: 0.85em; color: #92400e;
+    }
+
+    .grid-wrap { flex: 1; padding: 1em; }
+    #print-grid { background: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+
+    /* Order column styling */
+    .order-cell { color: #1a73e8; font-weight: 700; text-align: center; }
+
+    #toast {
+      position: fixed; bottom: 1.5em; right: 1.5em;
+      background: #1e293b; color: white;
+      padding: 0.75em 1.2em; border-radius: 8px;
+      font-size: 0.9em; display: none; z-index: 9999;
+    }
+
+    .pdf-link {
+      display: inline-block;
+      margin-top: 0.5em;
+      background: #166534;
+      color: white;
+      padding: 0.5em 1.2em;
+      border-radius: 6px;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 0.9em;
+    }
+
+    .batch-filter {
+      padding: 0.6em 1.2em;
+      background: white;
+      border-bottom: 1px solid #e0e0e0;
+      display: flex; gap: 0.5em; align-items: center;
+      font-size: 0.88em;
+    }
+    .batch-filter label { color: #64748b; }
+    .batch-filter select {
+      border: 1px solid #cbd5e1; border-radius: 5px;
+      padding: 0.3em 0.6em; font-size: 0.88em;
+    }
+    .ptab {
+      background: #f1f5f9; border: 1px solid #cbd5e1;
+      padding: 0.3em 0.9em; font-size: 0.83em; cursor: pointer; color: #64748b;
+    }
+    .ptab:first-child { border-radius: 5px 0 0 5px; }
+    .ptab:last-child  { border-radius: 0 5px 5px 0; }
+    .ptab + .ptab     { border-left: none; }
+    .ptab-active      { background: #1a73e8; border-color: #1a73e8; color: white; }
+  </style>
+</head>
+<body>
+
+<div class="sidebar">
+  <div class="sidebar-header">
+    <h1>Card Pricer</h1>
+    <div class="sub">Print Labels</div>
+  </div>
+  <div class="sidebar-nav">
+    <a class="nav-item" href="/dashboard">Review Grid</a>
+    <a class="nav-item active" href="/print">Print Labels</a>
+    <a class="nav-item" href="/capture">Mobile Capture</a>
+  </div>
+</div>
+
+<div class="main">
+  <div class="toolbar">
+    <h2>Label Print Queue</h2>
+    <button class="btn" onclick="selectAll()">Select All</button>
+    <button class="btn" onclick="clearSelection()">Clear</button>
+    <button class="btn primary" onclick="generateLabels()" id="print-btn">
+      Generate PDF for Selected
+    </button>
+  </div>
+
+  <div class="info-bar">
+    Sorted by <strong>Inventory #</strong>. Showing unprinted by default — switch tabs to see already-printed cards.
+  </div>
+
+  <div class="batch-filter">
+    <label>Batch:</label>
+    <select id="batch-select" onchange="loadCards()">
+      <option value="">All batches</option>
+    </select>
+    <span style="margin-left:1.2em;display:flex;gap:0;">
+      <button id="tab-unprinted" class="ptab ptab-active" onclick="setStatusFilter('uploaded', this)">Unprinted</button>
+      <button id="tab-printed"   class="ptab"             onclick="setStatusFilter('printed',  this)">Printed</button>
+      <button id="tab-all"       class="ptab"             onclick="setStatusFilter('all',       this)">All</button>
+    </span>
+  </div>
+
+  <div class="grid-wrap">
+    <div id="print-grid"></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+  let table = null;
+  let currentStatusFilter = 'uploaded'; // default: unprinted only
+
+  function setStatusFilter(status, el) {
+    currentStatusFilter = status;
+    document.querySelectorAll('.ptab').forEach(t => t.classList.remove('ptab-active'));
+    el.classList.add('ptab-active');
+    loadCards();
+  }
+
+  function initGrid(data) {
+    if (table) { table.replaceData(data); return; }
+
+    table = new Tabulator('#print-grid', {
+      data,
+      layout: 'fitColumns',
+      height: 'calc(100vh - 160px)',
+      selectable: true,
+      initialSort: [
+        { column: 'inventory_number', dir: 'asc' },
+      ],
+      columns: [
+        { title: '', formatter: 'rowSelection', titleFormatter: 'rowSelection',
+          hozAlign: 'center', headerSort: false, width: 40 },
+        { title: 'Status', field: 'status', width: 80,
+          formatter: cell => {
+            const v = cell.getValue();
+            const colors = { uploaded:'#d1fae5;color:#065f46', printed:'#f3f4f6;color:#6b7280' };
+            const s = colors[v] || '#fef3c7;color:#92400e';
+            return `<span style="background:${s.split(';')[0]};${s.split(';')[1] || ''};border-radius:4px;padding:2px 6px;font-size:0.78em">${v}</span>`;
+          }
+        },
+        { title: 'Title', field: 'display_title', minWidth: 200 },
+        { title: 'Bullet 1', field: 'bullet_1', minWidth: 150 },
+        { title: 'Bullet 2', field: 'bullet_2', minWidth: 150 },
+        { title: 'Price', field: 'final_price', width: 75,
+          formatter: cell => `$${(cell.getValue()||0).toFixed(2)}`,
+          hozAlign: 'right' },
+        { title: 'Inv #', field: 'inventory_number', width: 90 },
+        { title: 'Barcode', field: 'barcode', width: 100 },
+      ],
+    });
+  }
+
+  async function loadBatches() {
+    const r = await fetch('/api/batches');
+    const batches = await r.json();
+    const sel = document.getElementById('batch-select');
+    batches.forEach(b => {
+      const opt = document.createElement('option');
+      opt.value = b.id;
+      opt.textContent = `${b.name} (${b.uploaded_count || 0} uploaded)`;
+      sel.appendChild(opt);
+    });
+  }
+
+  async function loadCards() {
+    const batchId = document.getElementById('batch-select').value;
+
+    let cards;
+    if (currentStatusFilter === 'all') {
+      // Fetch both uploaded and printed, combine
+      const params = batchId ? `&batch_id=${batchId}` : '';
+      const [r1, r2] = await Promise.all([
+        fetch(`/api/cards?status=uploaded${params}`),
+        fetch(`/api/cards?status=printed${params}`),
+      ]);
+      const [d1, d2] = await Promise.all([r1.json(), r2.json()]);
+      cards = [...d1, ...d2];
+    } else {
+      let url = `/api/cards?status=${currentStatusFilter}`;
+      if (batchId) url += `&batch_id=${batchId}`;
+      const r = await fetch(url);
+      cards = await r.json();
+    }
+
+    cards.sort((a, b) =>
+      parseInt(a.inventory_number || 0) - parseInt(b.inventory_number || 0)
+    );
+    initGrid(cards);
+  }
+
+  function selectAll() { table && table.selectRow(); }
+  function clearSelection() { table && table.deselectRow(); }
+
+  async function generateLabels() {
+    if (!table) return;
+    const rows = table.getSelectedRows();
+    if (!rows.length) { toast('Select cards to print first'); return; }
+
+    // Sort by inventory number so labels come out in the order cards were processed
+    const sorted = rows.sort((a, b) => {
+      const da = a.getData(), db = b.getData();
+      return parseInt(da.inventory_number || 0) - parseInt(db.inventory_number || 0);
+    });
+    const ids = sorted.map(r => r.getData().id);
+
+    const btn = document.getElementById('print-btn');
+    btn.disabled = true;
+    btn.textContent = 'Generating…';
+
+    try {
+      const r = await fetch('/api/labels/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      });
+      const data = await r.json();
+
+      if (r.ok && data.ok) {
+        toast(`✓ ${data.count} labels generated`);
+        // Auto-open the PDF
+        window.open(data.url, '_blank');
+        loadCards(); // Refresh to show printed status
+      } else {
+        throw new Error(data.detail || 'Generation failed');
+      }
+    } catch(e) {
+      toast(`Error: ${e.message}`);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Generate PDF for Selected';
+    }
+  }
+
+  function toast(msg) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.style.display = 'block';
+    setTimeout(() => { el.style.display = 'none'; }, 4000);
+  }
+
+  loadBatches();
+  loadCards();
+</script>
+</body>
+</html>
