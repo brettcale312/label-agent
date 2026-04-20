@@ -136,6 +136,9 @@ class GenerateLabelsRequest(BaseModel):
 class DeleteCardsRequest(BaseModel):
     ids: list[int]
 
+class UploadCardsRequest(BaseModel):
+    ids: list[int]
+
 class StartBatchRequest(BaseModel):
     notes: str = ""
 
@@ -377,55 +380,39 @@ async def api_delete_cards(body: DeleteCardsRequest):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Sandpiper batch upload (rate-limited)
+# Sandpiper upload — works on a list of card IDs (no "approved" step needed)
 # ─────────────────────────────────────────────────────────────────────────────
 
 SANDPIPER_DELAY = 1.5   # seconds between API calls — be kind to their server
 
-@app.post("/api/batch/{batch_id}/upload")
-async def api_batch_upload(batch_id: int):
+
+async def _upload_cards_to_sandpiper(cards: list[dict]) -> dict:
     """
-    Upload all approved cards in a batch to Sandpiper.
+    Core upload logic — shared by both the ID-based and batch-based endpoints.
     - 1.5s pause between each card
     - Skips cards that already have a barcode
     - On error: logs it, marks the card, moves on (no retry loops)
     """
-    batch = get_batch(batch_id)
-    if not batch:
-        raise HTTPException(404, "Batch not found")
-
-    cards = get_approved_cards(batch_id)
-    if not cards:
-        return {"ok": True, "message": "No approved cards to upload", "uploaded": 0, "errors": 0}
-
     uploaded = 0
     errors = 0
-
-    logger.info(f"[upload] Starting Sandpiper upload for batch #{batch_id} — {len(cards)} cards")
 
     for i, card in enumerate(cards):
         card_id = card["id"]
 
-        # Safety: skip if already has a barcode (never double-upload)
         if card.get("barcode"):
             logger.info(f"[upload] Card #{card_id} already has barcode — skipping")
             continue
 
-        # Inventory number was assigned at ingest time — use what's in the DB
         inv_num = card.get("inventory_number") or f"CRD-{card_id}"
+        title   = card.get("display_title") or card.get("card_name") or "Card"
+        price   = float(card.get("final_price") or 0)
 
-        title = card.get("display_title") or card.get("card_name") or "Card"
-        price = float(card.get("final_price") or 0)
-
-        logger.info(
-            f"[upload] Card #{card_id} ({i+1}/{len(cards)}): {title!r} @ ${price}"
-        )
+        logger.info(f"[upload] Card #{card_id} ({i+1}/{len(cards)}): {title!r} @ ${price}")
 
         try:
             barcode = await create_item_and_barcode(inv_num, title, price)
             if barcode and barcode != "#":
                 mark_uploaded(card_id, inv_num, barcode)
-                # Also append to Google Sheets
                 try:
                     await append_row(_build_sheets_row(card, inv_num, barcode))
                 except Exception as e:
@@ -436,23 +423,51 @@ async def api_batch_upload(batch_id: int):
                 mark_sandpiper_error(card_id, "No barcode returned")
                 errors += 1
                 logger.warning(f"[upload] ✗ Card #{card_id} — no barcode returned")
-
         except Exception as e:
             mark_sandpiper_error(card_id, str(e))
             errors += 1
             logger.error(f"[upload] ✗ Card #{card_id} error: {e}")
 
-        # Rate limiting — pause between calls (except after the last one)
         if i < len(cards) - 1:
             await asyncio.sleep(SANDPIPER_DELAY)
 
-    logger.info(f"[upload] Batch #{batch_id} complete — {uploaded} uploaded, {errors} errors")
-    return {
-        "ok": True,
-        "uploaded": uploaded,
-        "errors": errors,
-        "total": len(cards),
-    }
+    return {"ok": True, "uploaded": uploaded, "errors": errors, "total": len(cards)}
+
+
+@app.post("/api/cards/upload")
+async def api_upload_cards(body: UploadCardsRequest):
+    """
+    Upload specific selected cards to Sandpiper (by ID).
+    Replaces the old approve→upload two-step — cards go directly from pending to uploaded.
+    """
+    if not body.ids:
+        raise HTTPException(400, "No card ids provided")
+    cards = [c for cid in body.ids if (c := get_card(cid))]
+    if not cards:
+        raise HTTPException(404, "None of the specified cards exist")
+    logger.info(f"[upload] Uploading {len(cards)} selected cards to Sandpiper")
+    result = await _upload_cards_to_sandpiper(cards)
+    logger.info(f"[upload] Done — {result['uploaded']} uploaded, {result['errors']} errors")
+    return result
+
+
+@app.post("/api/batch/{batch_id}/upload")
+async def api_batch_upload(batch_id: int):
+    """
+    Upload all pending cards in a batch to Sandpiper (batch-level convenience endpoint).
+    """
+    batch = get_batch(batch_id)
+    if not batch:
+        raise HTTPException(404, "Batch not found")
+
+    cards = list_cards(batch_id=batch_id, status="pending")
+    if not cards:
+        return {"ok": True, "message": "No pending cards to upload", "uploaded": 0, "errors": 0}
+
+    logger.info(f"[upload] Starting Sandpiper upload for batch #{batch_id} — {len(cards)} cards")
+    result = await _upload_cards_to_sandpiper(cards)
+    logger.info(f"[upload] Batch #{batch_id} complete — {result['uploaded']} uploaded, {result['errors']} errors")
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────

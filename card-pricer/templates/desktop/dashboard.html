@@ -195,6 +195,16 @@
     .char-count { font-size: 0.71em; text-align: right; margin-top: 0.2em; color: #94a3b8; }
     .char-count.warn { color: #92400e; font-weight: 700; }
 
+    .collapsible-header {
+      cursor: pointer; user-select: none;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .collapsible-header:hover { color: #1a73e8; }
+    .chevron {
+      font-size: 0.8em; transition: transform 0.2s; color: #94a3b8;
+    }
+    .collapsible-header.open .chevron { transform: rotate(180deg); }
+
     .panel-footer {
       padding: 0.9em 1.2em;
       border-top: 1px solid #e0e0e0; background: #f8fafc;
@@ -255,16 +265,16 @@
 <div class="main" id="main-area">
   <div class="toolbar">
     <h2 id="grid-title">All Cards</h2>
-    <button class="btn" onclick="approveSelected()">Approve Selected</button>
-    <button class="btn primary" onclick="uploadBatch()" id="upload-btn">Upload to Sandpiper</button>
-    <button class="btn" onclick="window.location='/print'">Print Labels</button>
+    <button class="btn" onclick="selectAll()">Select All</button>
+    <button class="btn" onclick="clearSelection()">Clear</button>
+    <button class="btn primary" onclick="uploadSelected()" id="upload-btn">Upload to Sandpiper</button>
+    <button class="btn" onclick="goToPrint()">Print Labels →</button>
     <button class="btn danger" onclick="deleteSelected()">Delete Selected</button>
   </div>
 
   <div class="filter-tabs">
     <div class="filter-tab active" onclick="setFilter(null, this)">All</div>
     <div class="filter-tab" onclick="setFilter('pending', this)">Pending</div>
-    <div class="filter-tab" onclick="setFilter('approved', this)">Approved</div>
     <div class="filter-tab" onclick="setFilter('uploaded', this)">Uploaded</div>
     <div class="filter-tab" onclick="setFilter('printed', this)">Printed</div>
     <div class="filter-tab" onclick="setFilter('archived', this)" style="color:#64748b;">Archived</div>
@@ -288,54 +298,18 @@
     <!-- Card image thumbnails (shown if photos were taken) -->
     <div id="panel-images" style="display:none;gap:0.5em;margin-bottom:1.2em;flex-wrap:wrap;"></div>
 
-    <!-- Identity -->
+    <!-- ── PRIMARY: Label content — always visible ── -->
     <div class="panel-section">
-      <div class="panel-section-title">Card Identity</div>
+      <div class="panel-section-title">Label Content</div>
       <div class="panel-field">
         <label>Display Title</label>
-        <input type="text" id="pf-display_title" oninput="updateCharCount(this, 'title-count', 40)" placeholder="Full card name + set + number">
+        <input type="text" id="pf-display_title" oninput="updateCharCount(this, 'title-count', 60)" placeholder="Full card name + set + number">
         <div class="char-count" id="title-count"></div>
       </div>
-      <div class="two-col">
-        <div class="panel-field">
-          <label>Set Name</label>
-          <input type="text" id="pf-set_name" placeholder="e.g. Champions Path">
-        </div>
-        <div class="panel-field">
-          <label>Card #</label>
-          <input type="text" id="pf-card_number" placeholder="e.g. 074/073">
-        </div>
+      <div class="panel-field">
+        <label>Final Price ($)</label>
+        <input type="number" id="pf-final_price" step="0.25" min="0" style="font-size:1.05em;font-weight:700;">
       </div>
-      <div class="two-col">
-        <div class="panel-field">
-          <label>Rarity</label>
-          <input type="text" id="pf-rarity" placeholder="e.g. Rainbow Rare">
-        </div>
-        <div class="panel-field">
-          <label>Condition</label>
-          <select id="pf-condition">
-            <option>Mint/NM</option>
-            <option>Good/VG</option>
-            <option>Fair/GD</option>
-            <option>Poor</option>
-          </select>
-        </div>
-      </div>
-      <div class="two-col">
-        <div class="panel-field">
-          <label>Brand / Publisher</label>
-          <input type="text" id="pf-publisher_brand" placeholder="e.g. Pokemon">
-        </div>
-        <div class="panel-field">
-          <label>Year</label>
-          <input type="text" id="pf-year" placeholder="e.g. 2022">
-        </div>
-      </div>
-    </div>
-
-    <!-- Label bullets -->
-    <div class="panel-section">
-      <div class="panel-section-title">Label Bullets</div>
       <div class="panel-field">
         <label>Bullet 1</label>
         <textarea id="pf-bullet_1" rows="2" placeholder="First selling point for the price tag"></textarea>
@@ -344,56 +318,94 @@
         <label>Bullet 2</label>
         <textarea id="pf-bullet_2" rows="2" placeholder="Rarity or collectibility point"></textarea>
       </div>
+    </div>
+
+    <!-- ── AI Notes — always visible, read only ── -->
+    <div class="panel-section">
+      <div class="panel-section-title">AI Notes</div>
       <div class="panel-field">
-        <label>Bullet 3 <span style="color:#94a3b8;font-weight:400">(stored, not printed on label)</span></label>
-        <textarea id="pf-bullet_3" rows="2" placeholder="Condition, set popularity, investment value"></textarea>
+        <textarea id="pf-ai_notes" rows="3" class="readonly" readonly tabindex="-1" placeholder="No notes"></textarea>
       </div>
     </div>
 
-    <!-- Pricing -->
+    <!-- ── MORE DETAILS — collapsible ── -->
     <div class="panel-section">
-      <div class="panel-section-title">Pricing</div>
-      <div class="two-col">
-        <div class="panel-field">
-          <label>Final Price ($)</label>
-          <input type="number" id="pf-final_price" step="0.25" min="0">
+      <div class="panel-section-title collapsible-header" onclick="toggleDetails(this)">
+        More Details
+        <span class="chevron">▼</span>
+      </div>
+      <div class="details-body" style="display:none;">
+        <!-- Card identity -->
+        <div class="two-col" style="margin-top:0.6em;">
+          <div class="panel-field">
+            <label>Set Name</label>
+            <input type="text" id="pf-set_name" placeholder="e.g. Champions Path">
+          </div>
+          <div class="panel-field">
+            <label>Card #</label>
+            <input type="text" id="pf-card_number" placeholder="e.g. 074/073">
+          </div>
+        </div>
+        <div class="two-col">
+          <div class="panel-field">
+            <label>Rarity</label>
+            <input type="text" id="pf-rarity" placeholder="e.g. Rainbow Rare">
+          </div>
+          <div class="panel-field">
+            <label>Condition</label>
+            <select id="pf-condition">
+              <option>Mint/NM</option>
+              <option>Good/VG</option>
+              <option>Fair/GD</option>
+              <option>Poor</option>
+            </select>
+          </div>
+        </div>
+        <div class="two-col">
+          <div class="panel-field">
+            <label>Brand / Publisher</label>
+            <input type="text" id="pf-publisher_brand" placeholder="e.g. Pokemon">
+          </div>
+          <div class="panel-field">
+            <label>Year</label>
+            <input type="text" id="pf-year" placeholder="e.g. 2022">
+          </div>
         </div>
         <div class="panel-field">
-          <label>Base Price ($) — read only</label>
-          <input type="number" id="pf-base_price" class="readonly" readonly tabindex="-1">
+          <label>Bullet 3 <span style="color:#94a3b8;font-weight:400">(stored, not printed)</span></label>
+          <textarea id="pf-bullet_3" rows="2"></textarea>
         </div>
-      </div>
-      <div class="panel-field">
-        <label>Price Source</label>
-        <input type="text" id="pf-price_source">
-      </div>
-    </div>
-
-    <!-- Info (read only) -->
-    <div class="panel-section">
-      <div class="panel-section-title">Info</div>
-      <div class="panel-field">
-        <label>AI Notes</label>
-        <textarea id="pf-ai_notes" rows="3" class="readonly" readonly tabindex="-1"></textarea>
-      </div>
-      <div class="panel-field">
-        <label>Search Query Used <span style="color:#94a3b8;font-weight:400">(PriceCharting &amp; eBay)</span></label>
-        <input type="text" id="pf-search_query" class="readonly" readonly tabindex="-1">
-      </div>
-      <div class="two-col">
+        <!-- Pricing detail -->
+        <div class="two-col">
+          <div class="panel-field">
+            <label>Base Price ($)</label>
+            <input type="number" id="pf-base_price" class="readonly" readonly tabindex="-1">
+          </div>
+          <div class="panel-field">
+            <label>Price Source</label>
+            <input type="text" id="pf-price_source" class="readonly" readonly tabindex="-1">
+          </div>
+        </div>
+        <!-- Read-only info -->
         <div class="panel-field">
-          <label>Inventory #</label>
-          <input type="text" id="pf-inventory_number" class="readonly" readonly tabindex="-1">
+          <label>Search Query <span style="color:#94a3b8;font-weight:400">(PriceCharting &amp; eBay)</span></label>
+          <input type="text" id="pf-search_query" class="readonly" readonly tabindex="-1">
+        </div>
+        <div class="two-col">
+          <div class="panel-field">
+            <label>Inventory #</label>
+            <input type="text" id="pf-inventory_number" class="readonly" readonly tabindex="-1">
+          </div>
+          <div class="panel-field">
+            <label>Status</label>
+            <input type="text" id="pf-status" class="readonly" readonly tabindex="-1">
+          </div>
         </div>
         <div class="panel-field">
-          <label>Status</label>
-          <input type="text" id="pf-status" class="readonly" readonly tabindex="-1">
+          <label>Barcode</label>
+          <input type="text" id="pf-barcode" class="readonly" readonly tabindex="-1">
         </div>
-      </div>
-      <div class="panel-field">
-        <label>Barcode</label>
-        <input type="text" id="pf-barcode" class="readonly" readonly tabindex="-1">
-      </div>
+      </div><!-- /details-body -->
     </div>
 
   </div><!-- /panel-body -->
@@ -478,7 +490,7 @@
   }
 
   function initGrid(data) {
-    if (table) { table.replaceData(data); return; }
+    if (table) { return table.replaceData(data); }
 
     table = new Tabulator('#card-grid', {
       data,
@@ -513,6 +525,11 @@
       if (e.target.type === 'checkbox') return;
       openPanel(row.getData());
     });
+
+    // Continuously mirror selection to localStorage so Print page can restore it
+    table.on('rowSelectionChanged', function() {
+      saveSelectionToStorage();
+    });
   }
 
   // ── Data loading ─────────────────────────────────────────────────────────
@@ -525,14 +542,15 @@
     if (!showArchived && currentFilter !== 'archived') url += 'exclude_archived=true';
     const r = await fetch(url);
     const data = await r.json();
-    initGrid(data);
+    return initGrid(data);  // returns the replaceData promise so callers can chain
   }
 
   function setFilter(status, el) {
+    const savedIds = getSelectedIds();  // preserve selection across tab switches
     currentFilter = status;
     document.querySelectorAll('.filter-tab').forEach(t => t.classList.remove('active'));
     el.classList.add('active');
-    loadCards();
+    loadCards().then(() => restoreSelection(savedIds));
   }
 
   // ── Batch sidebar ─────────────────────────────────────────────────────────
@@ -638,28 +656,41 @@
     loadBatches();
   }
 
-  // ── Approve ───────────────────────────────────────────────────────────────
+  // ── Selection helpers ─────────────────────────────────────────────────────
 
-  async function approveSelected() {
-    if (!table) return;
-    const rows = table.getSelectedRows();
-    if (!rows.length) { toast('Select cards first'); return; }
-    const ids = rows.map(r => r.getData().id);
-    await fetch('/api/cards/approve', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids }),
-    });
-    toast(`Approved ${ids.length} card${ids.length > 1 ? 's' : ''}`);
-    loadCards();
+  function selectAll()      { table && table.selectRow(); }
+  function clearSelection() { table && table.deselectRow(); }
+
+  function getSelectedIds() {
+    if (!table) return [];
+    return table.getSelectedRows().map(r => r.getData().id);
   }
 
-  // ── Sandpiper upload ──────────────────────────────────────────────────────
+  function saveSelectionToStorage() {
+    localStorage.setItem('cardPricerSelection', JSON.stringify(getSelectedIds()));
+  }
 
-  async function uploadBatch() {
-    const batchId = currentBatchId;
-    if (!batchId) { toast('Select a batch first'); return; }
+  function restoreSelection(ids) {
+    if (!table || !ids.length) return;
+    table.getRows().forEach(row => {
+      if (ids.includes(row.getData().id)) row.select();
+    });
+  }
 
+  // Navigate to print page — selection is already saved via rowSelectionChanged
+  function goToPrint() {
+    saveSelectionToStorage();
+    window.location = '/print';
+  }
+
+  // ── Sandpiper upload (selected cards) ─────────────────────────────────────
+
+  async function uploadSelected() {
+    if (!table) return;
+    const rows = table.getSelectedRows();
+    if (!rows.length) { toast('Select cards to upload first'); return; }
+
+    const ids = rows.map(r => r.getData().id);
     const overlay = document.getElementById('upload-progress');
     const bar     = document.getElementById('prog-bar');
     const detail  = document.getElementById('progress-detail');
@@ -669,14 +700,22 @@
     detail.textContent = 'Connecting to Sandpiper…';
 
     try {
-      const r    = await fetch(`/api/batch/${batchId}/upload`, { method: 'POST' });
+      const r    = await fetch('/api/cards/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      });
       const data = await r.json();
       bar.style.width = '100%';
       detail.textContent = `Done — ${data.uploaded} uploaded, ${data.errors} errors`;
+      // Save selection so user can switch to Print and it's still there
+      saveSelectionToStorage();
       setTimeout(() => {
         overlay.style.display = 'none';
-        loadCards();
-        toast(`✓ ${data.uploaded} cards uploaded to Sandpiper`);
+        // Reload but restore the selection so user can go straight to Print
+        const savedIds = getSelectedIds();
+        loadCards().then(() => restoreSelection(savedIds));
+        toast(`✓ ${data.uploaded} card${data.uploaded !== 1 ? 's' : ''} uploaded — go to Print Labels to generate PDF`);
       }, 1500);
     } catch(e) {
       detail.textContent = `Error: ${e.message}`;
@@ -749,7 +788,7 @@
 
     // Live char count on title
     const titleEl = document.getElementById('pf-display_title');
-    updateCharCount(titleEl, 'title-count', 40);
+    updateCharCount(titleEl, 'title-count', 60);
 
     document.getElementById('panel-card-title').textContent =
       `#${data.sequence_num} — ${(data.card_name || data.display_title || 'Card').substring(0, 30)}`;
@@ -846,6 +885,15 @@
 
     closePanel();
     document.getElementById('delete-modal').style.display = 'flex';
+  }
+
+  // ── Collapsible details ───────────────────────────────────────────────────
+
+  function toggleDetails(header) {
+    const body = header.nextElementSibling;
+    const isOpen = body.style.display !== 'none';
+    body.style.display = isOpen ? 'none' : 'block';
+    header.classList.toggle('open', !isOpen);
   }
 
   // ── Toast ─────────────────────────────────────────────────────────────────

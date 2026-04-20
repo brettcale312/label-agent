@@ -226,6 +226,14 @@
       parseInt(a.inventory_number || 0) - parseInt(b.inventory_number || 0)
     );
     initGrid(cards);
+
+    // Restore selection carried over from the dashboard (uploaded then navigated here)
+    const saved = JSON.parse(localStorage.getItem('cardPricerSelection') || '[]');
+    if (saved.length && table) {
+      table.getRows().forEach(row => {
+        if (saved.includes(row.getData().id)) row.select();
+      });
+    }
   }
 
   function selectAll() { table && table.selectRow(); }
