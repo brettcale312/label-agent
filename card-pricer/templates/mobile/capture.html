@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Card Pricer" />
+  <title>Card Pricer</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #f0f2f5;
+      min-height: 100vh;
+      padding-bottom: 2em;
+    }
+
+    /* Header */
+    .header {
+      background: #1a73e8;
+      color: white;
+      padding: 1em 1.2em 0.8em;
+    }
+    .header h1 { font-size: 1.2em; font-weight: 700; }
+    .header .sub { font-size: 0.82em; opacity: 0.85; margin-top: 0.15em; }
+
+    /* Batch bar */
+    .batch-bar {
+      background: white;
+      border-bottom: 1px solid #ddd;
+      padding: 0.75em 1.2em;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5em;
+    }
+    .batch-info { font-size: 0.88em; color: #444; }
+    .batch-name { font-weight: 700; color: #1a73e8; }
+    .batch-count {
+      background: #e8f0fe;
+      color: #1a73e8;
+      font-weight: 700;
+      font-size: 0.85em;
+      padding: 0.2em 0.6em;
+      border-radius: 20px;
+    }
+    .btn-sm {
+      background: white;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      padding: 0.35em 0.75em;
+      font-size: 0.82em;
+      cursor: pointer;
+      color: #444;
+    }
+    .btn-sm.danger { border-color: #e53e3e; color: #e53e3e; }
+    .btn-sm.primary { background: #1a73e8; border-color: #1a73e8; color: white; }
+
+    /* No batch state */
+    .no-batch {
+      margin: 2em 1.2em;
+      background: white;
+      border-radius: 12px;
+      padding: 2em 1.5em;
+      text-align: center;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    }
+    .no-batch h2 { color: #333; margin-bottom: 0.5em; font-size: 1.1em; }
+    .no-batch p { color: #666; font-size: 0.9em; margin-bottom: 1.5em; }
+    .btn-start {
+      background: #1a73e8;
+      color: white;
+      border: none;
+      border-radius: 10px;
+      padding: 0.9em 2em;
+      font-size: 1.05em;
+      font-weight: 700;
+      cursor: pointer;
+      width: 100%;
+    }
+
+    /* Upload area */
+    .upload-section {
+      margin: 1.2em;
+      background: white;
+      border-radius: 12px;
+      padding: 1.5em;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    }
+    .upload-section h2 {
+      font-size: 1em;
+      color: #333;
+      margin-bottom: 1em;
+    }
+
+    /* Camera button */
+    .camera-btn {
+      display: block;
+      width: 100%;
+      background: #f8f9fa;
+      border: 2px dashed #aaa;
+      border-radius: 10px;
+      padding: 2em;
+      text-align: center;
+      cursor: pointer;
+      color: #555;
+      margin-bottom: 1em;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    .camera-btn:active { background: #e8f0fe; border-color: #1a73e8; }
+    .camera-btn .icon { font-size: 2.5em; margin-bottom: 0.3em; }
+    .camera-btn .label { font-size: 0.95em; font-weight: 600; }
+    .camera-btn .sub { font-size: 0.78em; color: #888; margin-top: 0.2em; }
+    #file-input { display: none; }
+
+    /* Preview thumbnails */
+    #preview-wrap {
+      display: none;
+      gap: 0.5em;
+      margin-bottom: 1em;
+      flex-wrap: wrap;
+    }
+    .thumb-wrap {
+      position: relative;
+      width: 80px;
+      height: 80px;
+      flex-shrink: 0;
+    }
+    .thumb-wrap img {
+      width: 80px;
+      height: 80px;
+      object-fit: cover;
+      border-radius: 6px;
+      border: 1px solid #ddd;
+      display: block;
+    }
+    .thumb-remove {
+      position: absolute;
+      top: -6px;
+      right: -6px;
+      width: 20px;
+      height: 20px;
+      background: #e53e3e;
+      color: white;
+      border: none;
+      border-radius: 50%;
+      font-size: 0.75em;
+      font-weight: 700;
+      line-height: 1;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+    }
+
+    /* Submit button */
+    #submit-btn {
+      display: none;
+      width: 100%;
+      background: #2e7d32;
+      color: white;
+      border: none;
+      border-radius: 10px;
+      padding: 1em;
+      font-size: 1.05em;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    #submit-btn:disabled { background: #aaa; cursor: not-allowed; }
+
+    /* Status / result */
+    #status {
+      margin-top: 0.8em;
+      font-size: 0.9em;
+      text-align: center;
+      min-height: 1.4em;
+    }
+    .status-processing { color: #1a73e8; }
+    .status-ok { color: #2e7d32; font-weight: 600; }
+    .status-err { color: #c62828; }
+
+    /* Recent cards */
+    .recent-section {
+      margin: 0 1.2em 1.2em;
+    }
+    .recent-section h2 { font-size: 0.88em; color: #888; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.6em; }
+    .card-item {
+      background: white;
+      border-radius: 8px;
+      padding: 0.75em 1em;
+      margin-bottom: 0.5em;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    .card-item .card-title { font-size: 0.88em; font-weight: 600; color: #333; }
+    .card-item .card-meta { font-size: 0.78em; color: #888; margin-top: 0.1em; }
+    .card-item .card-price { font-weight: 700; color: #1a73e8; font-size: 0.95em; white-space: nowrap; }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <h1>Card Pricer</h1>
+    <div class="sub">Scan &amp; Price Trading Cards</div>
+  </div>
+
+  <!-- Batch bar -->
+  <div class="batch-bar" id="batch-bar">
+    {% if open_batch %}
+      <div class="batch-info">
+        Batch: <span class="batch-name">{{ open_batch.name }}</span>
+      </div>
+      <div style="display:flex;gap:0.5em;align-items:center;">
+        <span class="batch-count" id="card-count">—</span>
+        <button class="btn-sm danger" onclick="closeBatch({{ open_batch.id }})">End Batch</button>
+      </div>
+    {% else %}
+      <div class="batch-info" style="color:#888;">No active batch</div>
+    {% endif %}
+  </div>
+
+  <!-- No batch state -->
+  {% if not open_batch %}
+  <div class="no-batch" id="no-batch-panel">
+    <h2>Start a Batch to Begin</h2>
+    <p>A batch groups the cards you photograph together so you can review and upload them all at once.</p>
+    <textarea id="batch-notes" placeholder="Optional: describe these cards to help the AI (e.g. 'Pokemon fan art cards', 'MTG Spider-Man crossover set', 'Sports cards from 2021 Topps')" style="width:100%;margin-bottom:1em;padding:0.65em;border:1px solid #ccc;border-radius:8px;font-size:0.88em;font-family:inherit;resize:none;height:72px;"></textarea>
+    <button class="btn-start" onclick="startBatch()">Start New Batch</button>
+  </div>
+  {% endif %}
+
+  <!-- Upload area (only shown when batch is active) -->
+  <div class="upload-section" id="upload-section" {% if not open_batch %}style="display:none"{% endif %}>
+    <h2>Add Card to Batch</h2>
+
+    <label class="camera-btn" for="file-input">
+      <div class="icon">📷</div>
+      <div class="label">Take or Choose Photo</div>
+      <div class="sub">Tap again to add more angles</div>
+    </label>
+    <input type="file" id="file-input" accept="image/*" multiple capture="environment"
+           onchange="previewFiles(this)" />
+
+    <div id="preview-wrap" style="display:flex;"></div>
+
+    <button id="submit-btn" onclick="submitCard()">Price This Card</button>
+    <div id="status"></div>
+    <!-- Shown after a successful scan: quick-copy for identical cards -->
+    <div id="copy-section" style="display:none;margin-top:1em;padding-top:1em;border-top:1px solid #eee;text-align:center;">
+      <p style="font-size:0.82em;color:#666;margin-bottom:0.6em;">Have another copy of the same card?</p>
+      <button onclick="copyLastCard()" style="background:#f0f9ff;border:1px solid #7dd3fc;color:#0369a1;border-radius:8px;padding:0.5em 1.2em;font-size:0.92em;cursor:pointer;font-weight:600;">
+        + Add Identical Copy
+      </button>
+      <div id="copy-status" style="font-size:0.8em;color:#2e7d32;margin-top:0.4em;min-height:1.2em;"></div>
+    </div>
+  </div>
+
+  <!-- Recent cards in this batch -->
+  <div class="recent-section" id="recent-section" {% if not open_batch %}style="display:none"{% endif %}>
+    <h2>This Batch</h2>
+    <div id="recent-cards"></div>
+  </div>
+
+<script>
+  const BATCH_ID = {{ open_batch.id if open_batch else 'null' }};
+  let selectedFiles = [];
+  let lastCardId = null;
+
+  // ── Batch ──────────────────────────────────────────────────────────────────
+
+  async function startBatch() {
+    const notes = (document.getElementById('batch-notes')?.value || '').trim();
+    const r = await fetch('/api/batch/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notes }),
+    });
+    if (r.ok) window.location.reload();
+  }
+
+  async function closeBatch(id) {
+    if (!confirm('End this batch? You can still review cards on the desktop.')) return;
+    await fetch(`/api/batch/${id}/close`, { method: 'POST' });
+    window.location.reload();
+  }
+
+  // ── File preview ───────────────────────────────────────────────────────────
+
+  function previewFiles(input) {
+    // Accumulate — don't replace. iOS resets the input between camera opens.
+    const incoming = Array.from(input.files);
+    selectedFiles = [...selectedFiles, ...incoming];
+    // Reset the input so the same file can be selected again if needed,
+    // and so the change event fires reliably on the next tap.
+    input.value = '';
+    rebuildPreview();
+  }
+
+  function removeFile(index) {
+    selectedFiles.splice(index, 1);
+    rebuildPreview();
+  }
+
+  function rebuildPreview() {
+    const wrap = document.getElementById('preview-wrap');
+    wrap.innerHTML = '';
+    if (selectedFiles.length === 0) {
+      wrap.style.display = 'none';
+      document.getElementById('submit-btn').style.display = 'none';
+      return;
+    }
+    wrap.style.display = 'flex';
+    selectedFiles.forEach((f, i) => {
+      const outer = document.createElement('div');
+      outer.className = 'thumb-wrap';
+
+      const img = document.createElement('img');
+      img.src = URL.createObjectURL(f);
+      outer.appendChild(img);
+
+      const btn = document.createElement('button');
+      btn.className = 'thumb-remove';
+      btn.title = 'Remove this photo';
+      btn.textContent = '×';
+      btn.onclick = () => removeFile(i);
+      outer.appendChild(btn);
+
+      wrap.appendChild(outer);
+    });
+    document.getElementById('submit-btn').style.display = 'block';
+  }
+
+  // ── Submit card ────────────────────────────────────────────────────────────
+
+  async function submitCard() {
+    if (!selectedFiles.length) return;
+
+    const btn = document.getElementById('submit-btn');
+    const status = document.getElementById('status');
+    btn.disabled = true;
+    btn.textContent = 'Processing…';
+    status.textContent = 'Identifying and pricing card…';
+    status.className = 'status-processing';
+
+    const form = new FormData();
+    selectedFiles.forEach(f => form.append('files', f));
+
+    try {
+      const r = await fetch('/api/ingest', { method: 'POST', body: form });
+      const data = await r.json();
+
+      if (r.ok && data.ok) {
+        status.textContent = `✓ ${data.title} → $${data.price}`;
+        status.className = 'status-ok';
+        lastCardId = data.card_id;
+        // Show copy shortcut
+        document.getElementById('copy-section').style.display = 'block';
+        document.getElementById('copy-status').textContent = '';
+        // Reset for next card
+        selectedFiles = [];
+        document.getElementById('file-input').value = '';
+        document.getElementById('preview-wrap').style.display = 'none';
+        document.getElementById('preview-wrap').innerHTML = '';
+        btn.style.display = 'none';
+        // Refresh recent list
+        loadRecentCards();
+      } else {
+        throw new Error(data.detail || 'Unknown error');
+      }
+    } catch (e) {
+      status.textContent = `Error: ${e.message}`;
+      status.className = 'status-err';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Price This Card';
+    }
+  }
+
+  // ── Recent cards ───────────────────────────────────────────────────────────
+
+  async function loadRecentCards() {
+    if (!BATCH_ID) return;
+    const r = await fetch(`/api/cards?batch_id=${BATCH_ID}`);
+    const cards = await r.json();
+
+    document.getElementById('card-count').textContent = `${cards.length} cards`;
+
+    const wrap = document.getElementById('recent-cards');
+    if (!cards.length) {
+      wrap.innerHTML = '<p style="color:#aaa;font-size:0.85em;text-align:center;">No cards yet — take your first photo above</p>';
+      return;
+    }
+
+    // Show newest first
+    wrap.innerHTML = [...cards].reverse().map(c => `
+      <div class="card-item">
+        <div style="flex:1;min-width:0;">
+          <div class="card-title">${c.display_title || c.card_name || '—'}</div>
+          <div class="card-meta">#${c.sequence_num} · Inv ${c.inventory_number} · ${c.status}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:0.5em;flex-shrink:0;">
+          <div class="card-price">$${(c.final_price || 0).toFixed(2)}</div>
+          <button onclick="copyCard(${c.id})"
+                  title="Add identical copy"
+                  style="background:#f0f9ff;border:1px solid #7dd3fc;color:#0369a1;border-radius:6px;padding:0.25em 0.5em;font-size:0.8em;cursor:pointer;white-space:nowrap;">
+            + Copy
+          </button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  // ── Duplicate card ─────────────────────────────────────────────────────────
+
+  async function copyCard(cardId) {
+    try {
+      const r = await fetch(`/api/cards/${cardId}/duplicate`, { method: 'POST' });
+      const data = await r.json();
+      if (r.ok && data.ok) {
+        loadRecentCards();
+        return data;
+      }
+      throw new Error(data.detail || 'Copy failed');
+    } catch(e) {
+      alert(`Copy failed: ${e.message}`);
+    }
+  }
+
+  async function copyLastCard() {
+    if (!lastCardId) return;
+    const btn = event.currentTarget;
+    btn.disabled = true;
+    const copyStatus = document.getElementById('copy-status');
+    const data = await copyCard(lastCardId);
+    if (data) {
+      copyStatus.textContent = `✓ Copy added — Inv #${data.inventory_number}`;
+      lastCardId = data.card_id; // next "copy" duplicates the copy, preserving chain
+    }
+    btn.disabled = false;
+  }
+
+  // Init
+  if (BATCH_ID) loadRecentCards();
+</script>
+</body>
+</html>

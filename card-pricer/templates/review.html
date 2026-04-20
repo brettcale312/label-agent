@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Review Card</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #f5f5f5;
+      color: #333;
+      padding: 1.5em;
+      max-width: 680px;
+      margin: auto;
+    }
+    h1 { color: #1a73e8; text-align: center; margin-bottom: 0.3em; }
+    .subtitle { text-align: center; color: #666; margin-bottom: 1.5em; font-size: 0.9em; }
+
+    /* AI Notes banner */
+    .ai-notes {
+      background: #f0f4ff;
+      border: 1px solid #c7d7f7;
+      border-left: 4px solid #1a73e8;
+      border-radius: 6px;
+      padding: 0.75em 1em;
+      margin-bottom: 1.5em;
+      font-size: 0.88em;
+      color: #444;
+      line-height: 1.5;
+    }
+    .ai-notes strong { color: #1a73e8; }
+
+    /* Section headings */
+    .section {
+      font-weight: 700;
+      font-size: 0.85em;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #888;
+      margin: 1.4em 0 0.5em;
+      border-bottom: 1px solid #ddd;
+      padding-bottom: 0.2em;
+    }
+
+    form { display: flex; flex-direction: column; gap: 0.7em; }
+    label { font-weight: 600; font-size: 0.9em; margin-bottom: 0.1em; display: block; }
+
+    input[type="text"], textarea, select {
+      padding: 0.5em 0.6em;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+      font-size: 1em;
+      width: 100%;
+    }
+    textarea { min-height: 3.5em; resize: vertical; }
+
+    /* Price highlight */
+    .price-box {
+      background: #e8f5e9;
+      border: 1px solid #a5d6a7;
+      border-radius: 6px;
+      padding: 0.8em 1em;
+    }
+    .price-box label { color: #2e7d32; font-size: 1em; }
+    .price-box input {
+      border: 2px solid #43a047;
+      font-weight: 700;
+      font-size: 1.15em;
+      color: #2e7d32;
+    }
+
+    /* Source info (readonly) */
+    .source-info {
+      font-size: 0.82em;
+      color: #666;
+      background: #fafafa;
+      border: 1px solid #e0e0e0;
+      border-radius: 4px;
+      padding: 0.4em 0.6em;
+    }
+
+    button[type="submit"] {
+      background: #1a73e8;
+      color: white;
+      border: none;
+      padding: 0.9em;
+      border-radius: 6px;
+      font-weight: 700;
+      font-size: 1em;
+      cursor: pointer;
+      margin-top: 1.2em;
+    }
+    button[type="submit"]:hover { background: #1558b0; }
+  </style>
+</head>
+<body>
+  <h1>Review Card</h1>
+  <p class="subtitle">Check AI results and adjust before saving</p>
+
+  {% if data.get("ai_notes") %}
+  <div class="ai-notes">
+    <strong>AI Notes:</strong> {{ data["ai_notes"] }}
+  </div>
+  {% endif %}
+
+  <form action="/approve/{{ session_id }}" method="post">
+
+    <!-- ── Identity ─────────────────────────────────────────── -->
+    <div class="section">Card Identity</div>
+
+    <label for="title">Title</label>
+    <input type="text" id="title" name="title" value="{{ data.get('title','') }}" />
+
+    <label for="set_name">Set</label>
+    <input type="text" id="set_name" name="set_name" value="{{ data.get('set_name','') }}" />
+
+    <label for="card_number">Card Number</label>
+    <input type="text" id="card_number" name="card_number" value="{{ data.get('card_number','') }}" />
+
+    <label for="rarity">Rarity</label>
+    <input type="text" id="rarity" name="rarity" value="{{ data.get('rarity','') }}" />
+
+    <label for="publisher_brand">Brand / Publisher</label>
+    <input type="text" id="publisher_brand" name="publisher_brand" value="{{ data.get('publisher_brand','') }}" />
+
+    <label for="year">Year</label>
+    <input type="text" id="year" name="year" value="{{ data.get('year','') }}" />
+
+    <label for="condition">Condition</label>
+    <select id="condition" name="condition">
+      {% for opt in ["Mint/NM", "Good/VG", "Fair/GD", "Poor"] %}
+        <option value="{{ opt }}" {% if data.get('condition','') == opt %}selected{% endif %}>{{ opt }}</option>
+      {% endfor %}
+    </select>
+
+    <!-- ── Bullets ───────────────────────────────────────────── -->
+    <div class="section">Marketing Bullets (for label)</div>
+
+    <label for="bullet_1">Bullet 1</label>
+    <input type="text" id="bullet_1" name="bullet_1" value="{{ data.get('bullet_1','') }}" />
+
+    <label for="bullet_2">Bullet 2</label>
+    <input type="text" id="bullet_2" name="bullet_2" value="{{ data.get('bullet_2','') }}" />
+
+    <label for="bullet_3">Bullet 3</label>
+    <input type="text" id="bullet_3" name="bullet_3" value="{{ data.get('bullet_3','') }}" />
+
+    <!-- ── Pricing ───────────────────────────────────────────── -->
+    <div class="section">Pricing</div>
+
+    <label>Price Source</label>
+    <div class="source-info">{{ data.get('price_source', 'N/A') }}</div>
+    <input type="hidden" name="price_source" value="{{ data.get('price_source','') }}" />
+
+    <label for="base_price">Base Price (market value)</label>
+    <input type="text" id="base_price" name="base_price" value="{{ data.get('base_price','') }}" />
+
+    <div class="price-box">
+      <label for="price">Final Price (booth price — adjust if needed)</label>
+      <input type="text" id="price" name="price" value="{{ data.get('price','') }}" />
+    </div>
+
+    <!-- ── Inventory ──────────────────────────────────────────── -->
+    <div class="section">Inventory</div>
+
+    <label for="inventory_number">Inventory #</label>
+    <input type="text" id="inventory_number" name="inventory_number" value="{{ data.get('inventory_number','') }}" />
+
+    <!-- Hidden fields preserved through approve -->
+    <input type="hidden" name="ai_notes" value="{{ data.get('ai_notes','') }}" />
+    <input type="hidden" name="session_id" value="{{ session_id }}" />
+
+    <button type="submit">Approve &amp; Save</button>
+  </form>
+</body>
+</html>

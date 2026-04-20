@@ -1,0 +1,18 @@
+.env
+sessions/
+logs/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Database (runtime data — not committed)
+card_pricer.db
+card_pricer.db-shm
+card_pricer.db-wal
+
+# Card images (runtime uploads — not committed)
+uploads/
+
+# Generated PDFs (runtime output — not committed)
+labels/

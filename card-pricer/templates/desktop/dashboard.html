@@ -1,0 +1,867 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Card Pricer — Dashboard</title>
+  <link href="https://unpkg.com/tabulator-tables@6.2.1/dist/css/tabulator.min.css" rel="stylesheet" />
+  <script src="https://unpkg.com/tabulator-tables@6.2.1/dist/js/tabulator.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #f5f5f5; color: #333; }
+
+    /* ── Layout ─────────────────────────────────────────────────── */
+    .sidebar {
+      position: fixed; top: 0; left: 0; bottom: 0; width: 240px;
+      background: #1e293b; color: #cbd5e1;
+      display: flex; flex-direction: column; overflow-y: auto;
+    }
+    .main {
+      margin-left: 240px;
+      display: flex; flex-direction: column; min-height: 100vh;
+      transition: margin-right 0.22s ease;
+    }
+    .main.panel-open { margin-right: 400px; }
+
+    /* ── Sidebar ────────────────────────────────────────────────── */
+    .sidebar-header { padding: 1.2em 1em; border-bottom: 1px solid #334155; }
+    .sidebar-header h1 { font-size: 1em; font-weight: 700; color: white; }
+    .sidebar-header .sub { font-size: 0.75em; color: #94a3b8; margin-top: 0.2em; }
+
+    .sidebar-nav { padding: 0.75em 0; flex: 1; }
+    .nav-item {
+      display: block; padding: 0.6em 1em;
+      font-size: 0.88em; color: #cbd5e1;
+      cursor: pointer; text-decoration: none;
+      border-left: 3px solid transparent;
+    }
+    .nav-item:hover, .nav-item.active {
+      background: #334155; color: white; border-left-color: #1a73e8;
+    }
+    .nav-section {
+      font-size: 0.7em; text-transform: uppercase;
+      letter-spacing: 0.08em; color: #64748b;
+      padding: 1em 1em 0.3em;
+    }
+    .sidebar-batches { padding: 0 0 1em; }
+    .batch-item {
+      padding: 0.55em 1em; font-size: 0.82em;
+      cursor: pointer; border-left: 3px solid transparent;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .batch-item:hover, .batch-item.selected {
+      background: #334155; border-left-color: #1a73e8;
+    }
+    .batch-item .bname {
+      color: #e2e8f0; white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis; max-width: 140px;
+    }
+    .batch-item .bcount {
+      background: #475569; border-radius: 10px;
+      font-size: 0.78em; padding: 0.1em 0.5em;
+      color: #cbd5e1; flex-shrink: 0;
+    }
+    .badge-open {
+      background: #166534; color: #bbf7d0;
+      border-radius: 4px; font-size: 0.7em; padding: 0.1em 0.4em;
+    }
+    .btn-new-batch {
+      margin: 0 0.75em 1em;
+      background: #1a73e8; color: white;
+      border: none; border-radius: 6px;
+      padding: 0.6em; font-size: 0.85em; cursor: pointer;
+      width: calc(100% - 1.5em);
+    }
+
+    /* ── Toolbar ────────────────────────────────────────────────── */
+    .toolbar {
+      background: white; border-bottom: 1px solid #e0e0e0;
+      padding: 0.75em 1.2em;
+      display: flex; gap: 0.6em; align-items: center; flex-wrap: wrap;
+    }
+    .toolbar h2 { font-size: 1em; font-weight: 700; margin-right: auto; }
+
+    /* ── Buttons ────────────────────────────────────────────────── */
+    .btn {
+      background: #f1f5f9; border: 1px solid #cbd5e1;
+      border-radius: 6px; padding: 0.45em 1em;
+      font-size: 0.85em; cursor: pointer; color: #334155; white-space: nowrap;
+    }
+    .btn:hover { background: #e2e8f0; }
+    .btn.primary { background: #1a73e8; border-color: #1a73e8; color: white; }
+    .btn.primary:hover { background: #1558b0; }
+    .btn.success { background: #166534; border-color: #166534; color: white; }
+    .btn.success:hover { background: #14532d; }
+    .btn.danger { background: #fef2f2; border-color: #fca5a5; color: #991b1b; }
+    .btn.danger:hover { background: #fee2e2; border-color: #f87171; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* ── Filter tabs ────────────────────────────────────────────── */
+    .filter-tabs {
+      background: white; border-bottom: 1px solid #e0e0e0;
+      padding: 0 1.2em;
+      display: flex; gap: 0; align-items: stretch;
+    }
+    .filter-tab {
+      padding: 0.6em 1.2em; font-size: 0.85em; cursor: pointer;
+      border-bottom: 2px solid transparent; color: #64748b;
+    }
+    .filter-tab.active { color: #1a73e8; border-bottom-color: #1a73e8; font-weight: 600; }
+    .filter-hint {
+      margin-left: auto; align-self: center;
+      font-size: 0.78em; color: #92400e; padding: 0 1em;
+    }
+
+    /* ── Grid ───────────────────────────────────────────────────── */
+    .grid-wrap { flex: 1; padding: 1em; }
+    #card-grid {
+      background: white; border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+
+    /* Tabulator row hover hint */
+    .tabulator-row:hover { cursor: pointer; }
+
+    /* Status badges */
+    .status-pending  { background:#fef3c7;color:#92400e;border-radius:4px;padding:2px 6px;font-size:0.78em; }
+    .status-approved { background:#dbeafe;color:#1e40af;border-radius:4px;padding:2px 6px;font-size:0.78em; }
+    .status-uploaded { background:#d1fae5;color:#065f46;border-radius:4px;padding:2px 6px;font-size:0.78em; }
+    .status-printed  { background:#f3f4f6;color:#6b7280;border-radius:4px;padding:2px 6px;font-size:0.78em; }
+    .status-archived { background:#1e293b;color:#64748b;border-radius:4px;padding:2px 6px;font-size:0.78em; }
+
+    /* ── Side edit panel ────────────────────────────────────────── */
+    .edit-panel {
+      position: fixed; right: 0; top: 0; bottom: 0; width: 400px;
+      background: white; border-left: 1px solid #e0e0e0;
+      box-shadow: -4px 0 20px rgba(0,0,0,0.12);
+      display: flex; flex-direction: column;
+      transform: translateX(100%);
+      transition: transform 0.22s ease;
+      z-index: 200;
+    }
+    .edit-panel.open { transform: translateX(0); }
+
+    .panel-header {
+      padding: 0.9em 1.2em;
+      border-bottom: 1px solid #e0e0e0;
+      display: flex; align-items: center; gap: 0.5em;
+      background: #f8fafc;
+      position: sticky; top: 0; z-index: 10; flex-shrink: 0;
+    }
+    .panel-header h3 { font-size: 0.9em; font-weight: 700; flex: 1; margin: 0; color: #1e293b; }
+    .panel-close {
+      background: none; border: none; cursor: pointer;
+      color: #94a3b8; font-size: 1.1em; padding: 0.25em 0.4em;
+      border-radius: 4px; line-height: 1;
+    }
+    .panel-close:hover { background: #f1f5f9; color: #333; }
+
+    .panel-body { padding: 1em 1.2em; flex: 1; overflow-y: auto; }
+
+    .panel-section { margin-bottom: 1.4em; }
+    .panel-section-title {
+      font-size: 0.68em; text-transform: uppercase;
+      letter-spacing: 0.09em; color: #94a3b8; font-weight: 600;
+      margin-bottom: 0.6em;
+      padding-bottom: 0.35em; border-bottom: 1px solid #f1f5f9;
+    }
+    .panel-field { margin-bottom: 0.75em; }
+    .panel-field label {
+      display: block; font-size: 0.76em;
+      font-weight: 500; color: #64748b; margin-bottom: 0.3em;
+    }
+    .panel-field input,
+    .panel-field select,
+    .panel-field textarea {
+      width: 100%; padding: 0.5em 0.65em;
+      border: 1px solid #cbd5e1; border-radius: 6px;
+      font-size: 0.88em; font-family: inherit; color: #1e293b;
+      background: white;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .panel-field input:focus,
+    .panel-field select:focus,
+    .panel-field textarea:focus {
+      outline: none; border-color: #1a73e8;
+      box-shadow: 0 0 0 3px rgba(26,115,232,0.12);
+    }
+    .panel-field textarea { resize: vertical; min-height: 60px; line-height: 1.45; }
+    .panel-field .readonly {
+      background: #f8fafc; color: #64748b; cursor: default;
+    }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5em; }
+    .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.5em; }
+
+    .char-count { font-size: 0.71em; text-align: right; margin-top: 0.2em; color: #94a3b8; }
+    .char-count.warn { color: #92400e; font-weight: 700; }
+
+    .panel-footer {
+      padding: 0.9em 1.2em;
+      border-top: 1px solid #e0e0e0; background: #f8fafc;
+      display: flex; gap: 0.6em; align-items: center; flex-shrink: 0;
+    }
+    #save-status { font-size: 0.82em; color: #166534; display: none; }
+
+    /* ── Toast ──────────────────────────────────────────────────── */
+    #toast {
+      position: fixed; bottom: 1.5em; right: 1.5em;
+      background: #1e293b; color: white;
+      padding: 0.75em 1.2em; border-radius: 8px;
+      font-size: 0.9em; display: none; z-index: 9999;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    }
+
+    /* ── Upload progress overlay ───────────────────────────────── */
+    #upload-progress {
+      display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.5); z-index: 9998;
+      align-items: center; justify-content: center;
+    }
+    .progress-box {
+      background: white; border-radius: 12px; padding: 2em;
+      text-align: center; min-width: 280px;
+    }
+    .progress-box h3 { margin-bottom: 0.5em; }
+    .progress-bar-wrap { background: #e0e0e0; border-radius: 4px; height: 8px; margin: 1em 0; }
+    .progress-bar { background: #1a73e8; height: 8px; border-radius: 4px; width: 0%; transition: width 0.3s; }
+    #progress-detail { font-size: 0.85em; color: #666; }
+  </style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<div class="sidebar">
+  <div class="sidebar-header">
+    <h1>Card Pricer</h1>
+    <div class="sub">Batch Review Dashboard</div>
+  </div>
+  <div class="sidebar-nav">
+    <a class="nav-item active" href="/dashboard">Review Grid</a>
+    <a class="nav-item" href="/print">Print Labels</a>
+    <a class="nav-item" href="/capture">Mobile Capture</a>
+  </div>
+  <div class="nav-section">Batches</div>
+  <button class="btn-new-batch" onclick="startBatch()">+ New Batch</button>
+  <div class="sidebar-batches" id="batch-list"></div>
+  <div style="padding:0.5em 1em 1em;border-top:1px solid #334155;">
+    <button onclick="toggleArchived()" id="archived-toggle-label"
+            style="background:none;border:none;color:#64748b;font-size:0.75em;cursor:pointer;padding:0;text-decoration:underline;">
+      Show archived
+    </button>
+  </div>
+</div>
+
+<!-- Main -->
+<div class="main" id="main-area">
+  <div class="toolbar">
+    <h2 id="grid-title">All Cards</h2>
+    <button class="btn" onclick="approveSelected()">Approve Selected</button>
+    <button class="btn primary" onclick="uploadBatch()" id="upload-btn">Upload to Sandpiper</button>
+    <button class="btn" onclick="window.location='/print'">Print Labels</button>
+    <button class="btn danger" onclick="deleteSelected()">Delete Selected</button>
+  </div>
+
+  <div class="filter-tabs">
+    <div class="filter-tab active" onclick="setFilter(null, this)">All</div>
+    <div class="filter-tab" onclick="setFilter('pending', this)">Pending</div>
+    <div class="filter-tab" onclick="setFilter('approved', this)">Approved</div>
+    <div class="filter-tab" onclick="setFilter('uploaded', this)">Uploaded</div>
+    <div class="filter-tab" onclick="setFilter('printed', this)">Printed</div>
+    <div class="filter-tab" onclick="setFilter('archived', this)" style="color:#64748b;">Archived</div>
+    <span class="filter-hint">⚠ orange title = over 60 chars, may not fit on label</span>
+  </div>
+
+  <div class="grid-wrap">
+    <div id="card-grid"></div>
+  </div>
+</div>
+
+<!-- Side edit panel -->
+<div class="edit-panel" id="edit-panel">
+  <div class="panel-header">
+    <h3 id="panel-card-title">Edit Card</h3>
+    <button class="panel-close" onclick="closePanel()" title="Close panel">✕</button>
+  </div>
+
+  <div class="panel-body">
+
+    <!-- Card image thumbnails (shown if photos were taken) -->
+    <div id="panel-images" style="display:none;gap:0.5em;margin-bottom:1.2em;flex-wrap:wrap;"></div>
+
+    <!-- Identity -->
+    <div class="panel-section">
+      <div class="panel-section-title">Card Identity</div>
+      <div class="panel-field">
+        <label>Display Title</label>
+        <input type="text" id="pf-display_title" oninput="updateCharCount(this, 'title-count', 40)" placeholder="Full card name + set + number">
+        <div class="char-count" id="title-count"></div>
+      </div>
+      <div class="two-col">
+        <div class="panel-field">
+          <label>Set Name</label>
+          <input type="text" id="pf-set_name" placeholder="e.g. Champions Path">
+        </div>
+        <div class="panel-field">
+          <label>Card #</label>
+          <input type="text" id="pf-card_number" placeholder="e.g. 074/073">
+        </div>
+      </div>
+      <div class="two-col">
+        <div class="panel-field">
+          <label>Rarity</label>
+          <input type="text" id="pf-rarity" placeholder="e.g. Rainbow Rare">
+        </div>
+        <div class="panel-field">
+          <label>Condition</label>
+          <select id="pf-condition">
+            <option>Mint/NM</option>
+            <option>Good/VG</option>
+            <option>Fair/GD</option>
+            <option>Poor</option>
+          </select>
+        </div>
+      </div>
+      <div class="two-col">
+        <div class="panel-field">
+          <label>Brand / Publisher</label>
+          <input type="text" id="pf-publisher_brand" placeholder="e.g. Pokemon">
+        </div>
+        <div class="panel-field">
+          <label>Year</label>
+          <input type="text" id="pf-year" placeholder="e.g. 2022">
+        </div>
+      </div>
+    </div>
+
+    <!-- Label bullets -->
+    <div class="panel-section">
+      <div class="panel-section-title">Label Bullets</div>
+      <div class="panel-field">
+        <label>Bullet 1</label>
+        <textarea id="pf-bullet_1" rows="2" placeholder="First selling point for the price tag"></textarea>
+      </div>
+      <div class="panel-field">
+        <label>Bullet 2</label>
+        <textarea id="pf-bullet_2" rows="2" placeholder="Rarity or collectibility point"></textarea>
+      </div>
+      <div class="panel-field">
+        <label>Bullet 3 <span style="color:#94a3b8;font-weight:400">(stored, not printed on label)</span></label>
+        <textarea id="pf-bullet_3" rows="2" placeholder="Condition, set popularity, investment value"></textarea>
+      </div>
+    </div>
+
+    <!-- Pricing -->
+    <div class="panel-section">
+      <div class="panel-section-title">Pricing</div>
+      <div class="two-col">
+        <div class="panel-field">
+          <label>Final Price ($)</label>
+          <input type="number" id="pf-final_price" step="0.25" min="0">
+        </div>
+        <div class="panel-field">
+          <label>Base Price ($) — read only</label>
+          <input type="number" id="pf-base_price" class="readonly" readonly tabindex="-1">
+        </div>
+      </div>
+      <div class="panel-field">
+        <label>Price Source</label>
+        <input type="text" id="pf-price_source">
+      </div>
+    </div>
+
+    <!-- Info (read only) -->
+    <div class="panel-section">
+      <div class="panel-section-title">Info</div>
+      <div class="panel-field">
+        <label>AI Notes</label>
+        <textarea id="pf-ai_notes" rows="3" class="readonly" readonly tabindex="-1"></textarea>
+      </div>
+      <div class="panel-field">
+        <label>Search Query Used <span style="color:#94a3b8;font-weight:400">(PriceCharting &amp; eBay)</span></label>
+        <input type="text" id="pf-search_query" class="readonly" readonly tabindex="-1">
+      </div>
+      <div class="two-col">
+        <div class="panel-field">
+          <label>Inventory #</label>
+          <input type="text" id="pf-inventory_number" class="readonly" readonly tabindex="-1">
+        </div>
+        <div class="panel-field">
+          <label>Status</label>
+          <input type="text" id="pf-status" class="readonly" readonly tabindex="-1">
+        </div>
+      </div>
+      <div class="panel-field">
+        <label>Barcode</label>
+        <input type="text" id="pf-barcode" class="readonly" readonly tabindex="-1">
+      </div>
+    </div>
+
+  </div><!-- /panel-body -->
+
+  <div class="panel-footer">
+    <button class="btn primary" onclick="savePanel()" id="save-panel-btn">Save Changes</button>
+    <span id="save-status">✓ Saved</span>
+    <button class="btn danger" onclick="deleteCurrent()" style="margin-left:auto">Delete Card</button>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<!-- Delete confirmation modal -->
+<div id="delete-modal" style="
+    display:none; position:fixed; top:0; left:0; right:0; bottom:0;
+    background:rgba(0,0,0,0.45); z-index:9999;
+    align-items:center; justify-content:center;">
+  <div style="background:white; border-radius:12px; padding:2em; max-width:380px; width:90%;
+              box-shadow:0 8px 32px rgba(0,0,0,0.25);">
+    <h3 style="margin-bottom:0.5em; color:#991b1b;">Delete Cards?</h3>
+    <p id="delete-modal-msg" style="font-size:0.9em; color:#444; margin-bottom:1em;"></p>
+    <p style="font-size:0.82em; color:#888; margin-bottom:1.4em;">
+      Cards already uploaded to Sandpiper will become orphans there —
+      you'll need to remove them manually in Sandpiper if needed.
+    </p>
+    <div style="display:flex; gap:0.75em; justify-content:flex-end;">
+      <button class="btn" onclick="closeDeleteModal()">Cancel</button>
+      <button class="btn danger" id="delete-confirm-btn" onclick="confirmDelete()" style="font-weight:600;">
+        Yes, Delete
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Upload progress overlay -->
+<div id="upload-progress" style="display:none;">
+  <div class="progress-box">
+    <h3>Uploading to Sandpiper…</h3>
+    <div class="progress-bar-wrap"><div class="progress-bar" id="prog-bar"></div></div>
+    <div id="progress-detail">Starting…</div>
+    <p style="font-size:0.78em;color:#999;margin-top:0.8em;">Please wait — pausing between cards to be gentle on the API</p>
+  </div>
+</div>
+
+<script>
+  let currentBatchId = null;
+  let currentFilter  = null;
+  let table          = null;
+  let _currentCardId = null;
+  let _pendingDeleteIds = [];
+
+  // ── Grid ──────────────────────────────────────────────────────────────────
+
+  function titleFormatter(cell) {
+    const v = cell.getValue() || '';
+    const el = cell.getElement();
+    if (v.length > 60) {
+      el.style.background = '#fff7ed';
+      el.title = `⚠ ${v.length} chars — shorten for 2×2 label (aim for ≤60)`;
+      return `<span style="color:#92400e">⚠ ${v}</span>`;
+    }
+    el.style.background = '';
+    el.title = '';
+    return v;
+  }
+
+  function statusFormatter(cell) {
+    const v = cell.getValue() || 'pending';
+    return `<span class="status-${v}">${v}</span>`;
+  }
+
+  function priceFormatter(cell) {
+    const v = cell.getValue();
+    return `<strong style="color:#1a73e8">$${(v || 0).toFixed(2)}</strong>`;
+  }
+
+  function tip(e, cell) {
+    // Native browser tooltip — Tabulator 6 passes (event, cell, onRendered)
+    return String(cell.getValue() || '');
+  }
+
+  function initGrid(data) {
+    if (table) { table.replaceData(data); return; }
+
+    table = new Tabulator('#card-grid', {
+      data,
+      layout: 'fitColumns',
+      height: 'calc(100vh - 142px)',
+      selectable: true,
+      movableColumns: true,
+      columns: [
+        { title: '', field: 'id', formatter: 'rowSelection', titleFormatter: 'rowSelection',
+          hozAlign: 'center', headerSort: false, width: 40, frozen: true },
+        { title: '#', field: 'sequence_num', width: 45, hozAlign: 'center',
+          sorter: 'number', frozen: true },
+        { title: 'Status', field: 'status', width: 90, formatter: statusFormatter },
+        { title: 'Title', field: 'display_title', minWidth: 200,
+          formatter: titleFormatter, tooltip: tip },
+        { title: 'Set', field: 'set_name', width: 140, tooltip: tip },
+        { title: '#', field: 'card_number', width: 75 },
+        { title: 'Rarity', field: 'rarity', width: 130, tooltip: tip },
+        { title: 'Cond.', field: 'condition', width: 85 },
+        { title: 'Bullet 1', field: 'bullet_1', minWidth: 160, tooltip: tip },
+        { title: 'Bullet 2', field: 'bullet_2', minWidth: 160, tooltip: tip },
+        { title: 'Price', field: 'final_price', width: 80, formatter: priceFormatter },
+        { title: 'Inv #', field: 'inventory_number', width: 80 },
+        { title: 'Barcode', field: 'barcode', width: 100 },
+        { title: 'AI Notes', field: 'ai_notes', width: 180, tooltip: tip },
+      ],
+    });
+
+    // rowClick must be registered as an event listener in Tabulator 6
+    // (the config option is unreliable when selectable:true is also set)
+    table.on('rowClick', function(e, row) {
+      if (e.target.type === 'checkbox') return;
+      openPanel(row.getData());
+    });
+  }
+
+  // ── Data loading ─────────────────────────────────────────────────────────
+
+  async function loadCards() {
+    let url = '/api/cards?';
+    if (currentBatchId) url += `batch_id=${currentBatchId}&`;
+    if (currentFilter)  url += `status=${currentFilter}&`;
+    // Respect the sidebar archive toggle — hide archived cards unless showing archived
+    if (!showArchived && currentFilter !== 'archived') url += 'exclude_archived=true';
+    const r = await fetch(url);
+    const data = await r.json();
+    initGrid(data);
+  }
+
+  function setFilter(status, el) {
+    currentFilter = status;
+    document.querySelectorAll('.filter-tab').forEach(t => t.classList.remove('active'));
+    el.classList.add('active');
+    loadCards();
+  }
+
+  // ── Batch sidebar ─────────────────────────────────────────────────────────
+
+  let showArchived = false;
+
+  async function loadBatches() {
+    const url = '/api/batches' + (showArchived ? '?include_archived=true' : '');
+    const r = await fetch(url);
+    const batches = await r.json();
+    const wrap = document.getElementById('batch-list');
+    wrap.innerHTML = batches.map(b => {
+      const isArchived = b.status === 'archived';
+      const safeName = b.name.replace(/'/g, "\\'");
+      return `
+      <div class="batch-item ${b.id === currentBatchId ? 'selected' : ''} ${isArchived ? 'archived-batch' : ''}"
+           onclick="selectBatch(${b.id}, '${safeName}')">
+        <span class="bname" style="flex:1;min-width:0;${isArchived ? 'opacity:0.55' : ''}">
+          ${b.status === 'open' ? '<span class="badge-open">OPEN</span> ' : ''}
+          ${isArchived ? '<span style="font-size:0.7em;background:#334155;color:#94a3b8;border-radius:3px;padding:0.1em 0.4em;margin-right:0.2em;">archived</span>' : ''}
+          ${b.name}
+          ${b.notes ? `<span style="display:block;font-size:0.72em;color:#94a3b8;white-space:normal;margin-top:0.1em;">${b.notes}</span>` : ''}
+        </span>
+        <span style="display:flex;align-items:center;gap:0.3em;flex-shrink:0;">
+          <span class="bcount">${b.total_cards || 0}</span>
+          ${isArchived ? `
+            <button onclick="event.stopPropagation();unarchiveBatch(${b.id},'${safeName}')"
+                    title="Restore batch"
+                    style="background:none;border:none;cursor:pointer;color:#64748b;font-size:0.82em;padding:0.1em 0.3em;line-height:1;border-radius:3px;"
+                    onmouseover="this.style.color='#166534'" onmouseout="this.style.color='#64748b'">↩</button>
+            <button onclick="event.stopPropagation();archiveOrDeleteBatch(${b.id},'${safeName}',${b.total_cards||0},'${b.status}')"
+                    title="Permanently delete"
+                    style="background:none;border:none;cursor:pointer;color:#64748b;font-size:0.9em;padding:0.1em 0.2em;line-height:1;border-radius:3px;"
+                    onmouseover="this.style.color='#991b1b'" onmouseout="this.style.color='#64748b'">✕</button>
+          ` : `
+            <button onclick="event.stopPropagation();archiveOrDeleteBatch(${b.id},'${safeName}',${b.total_cards||0},'${b.status}')"
+                    title="${b.total_cards > 0 ? 'Archive batch' : 'Delete empty batch'}"
+                    style="background:none;border:none;cursor:pointer;color:#64748b;font-size:0.9em;padding:0.1em 0.2em;line-height:1;border-radius:3px;"
+                    onmouseover="this.style.color='#991b1b'" onmouseout="this.style.color='#64748b'">✕</button>
+          `}
+        </span>
+      </div>`;
+    }).join('');
+  }
+
+  function selectBatch(id, name) {
+    currentBatchId = id;
+    document.getElementById('grid-title').textContent = name;
+    document.getElementById('upload-btn').setAttribute('data-batch', id);
+    loadBatches();
+    loadCards();
+  }
+
+  async function startBatch() {
+    const r = await fetch('/api/batch/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notes: '' }),
+    });
+    const data = await r.json();
+    toast(`Started: ${data.name}`);
+    loadBatches();
+    selectBatch(data.batch_id, data.name);
+  }
+
+  async function archiveOrDeleteBatch(id, name, cardCount, status) {
+    if (status === 'archived') {
+      // Already archived — offer to permanently delete
+      if (!confirm(`Permanently delete archived batch "${name}" and its ${cardCount} card(s)?`)) return;
+      await fetch(`/api/batch/${id}/delete`, { method: 'POST' });
+      toast(`Deleted "${name}"`);
+    } else if (cardCount > 0) {
+      // Has cards — archive instead of delete
+      if (!confirm(`Archive batch "${name}"? It will be hidden by default but all ${cardCount} card(s) will be kept.`)) return;
+      await fetch(`/api/batch/${id}/archive`, { method: 'POST' });
+      toast(`Archived "${name}"`);
+    } else {
+      // Empty — just delete
+      if (!confirm(`Delete empty batch "${name}"?`)) return;
+      await fetch(`/api/batch/${id}/delete`, { method: 'POST' });
+      toast(`Deleted "${name}"`);
+    }
+    if (currentBatchId === id) {
+      currentBatchId = null;
+      document.getElementById('grid-title').textContent = 'All Cards';
+    }
+    loadBatches();
+    loadCards();
+  }
+
+  async function unarchiveBatch(id, name) {
+    if (!confirm(`Restore batch "${name}"? Its cards will be set back to Printed status.`)) return;
+    await fetch(`/api/batch/${id}/unarchive`, { method: 'POST' });
+    toast(`Restored "${name}"`);
+    loadBatches();
+    loadCards();
+  }
+
+  function toggleArchived() {
+    showArchived = !showArchived;
+    document.getElementById('archived-toggle-label').textContent =
+      showArchived ? 'Hide archived' : 'Show archived';
+    loadBatches();
+  }
+
+  // ── Approve ───────────────────────────────────────────────────────────────
+
+  async function approveSelected() {
+    if (!table) return;
+    const rows = table.getSelectedRows();
+    if (!rows.length) { toast('Select cards first'); return; }
+    const ids = rows.map(r => r.getData().id);
+    await fetch('/api/cards/approve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    });
+    toast(`Approved ${ids.length} card${ids.length > 1 ? 's' : ''}`);
+    loadCards();
+  }
+
+  // ── Sandpiper upload ──────────────────────────────────────────────────────
+
+  async function uploadBatch() {
+    const batchId = currentBatchId;
+    if (!batchId) { toast('Select a batch first'); return; }
+
+    const overlay = document.getElementById('upload-progress');
+    const bar     = document.getElementById('prog-bar');
+    const detail  = document.getElementById('progress-detail');
+
+    overlay.style.display = 'flex';
+    bar.style.width = '5%';
+    detail.textContent = 'Connecting to Sandpiper…';
+
+    try {
+      const r    = await fetch(`/api/batch/${batchId}/upload`, { method: 'POST' });
+      const data = await r.json();
+      bar.style.width = '100%';
+      detail.textContent = `Done — ${data.uploaded} uploaded, ${data.errors} errors`;
+      setTimeout(() => {
+        overlay.style.display = 'none';
+        loadCards();
+        toast(`✓ ${data.uploaded} cards uploaded to Sandpiper`);
+      }, 1500);
+    } catch(e) {
+      detail.textContent = `Error: ${e.message}`;
+      setTimeout(() => { overlay.style.display = 'none'; }, 3000);
+    }
+  }
+
+  // ── Delete (bulk) ─────────────────────────────────────────────────────────
+
+  function deleteSelected() {
+    if (!table) return;
+    const rows = table.getSelectedRows();
+    if (!rows.length) { toast('Select cards first'); return; }
+    _pendingDeleteIds = rows.map(r => r.getData().id);
+
+    const hasUploaded = rows.some(r =>
+      ['uploaded', 'printed'].includes(r.getData().status));
+    let msg = `Delete ${_pendingDeleteIds.length} card${_pendingDeleteIds.length > 1 ? 's' : ''}?`;
+    if (hasUploaded) msg += ' One or more have already been uploaded to Sandpiper.';
+    document.getElementById('delete-modal-msg').textContent = msg;
+    document.getElementById('delete-modal').style.display = 'flex';
+  }
+
+  function closeDeleteModal() {
+    document.getElementById('delete-modal').style.display = 'none';
+    _pendingDeleteIds = [];
+  }
+
+  async function confirmDelete() {
+    if (!_pendingDeleteIds.length) return;
+    const btn = document.getElementById('delete-confirm-btn');
+    btn.disabled = true; btn.textContent = 'Deleting…';
+    try {
+      const r    = await fetch('/api/cards/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: _pendingDeleteIds }),
+      });
+      const data = await r.json();
+      closeDeleteModal();
+      toast(`Deleted ${data.deleted} card${data.deleted > 1 ? 's' : ''}`);
+      if (_currentCardId && _pendingDeleteIds.includes(_currentCardId)) closePanel();
+      loadCards();
+      loadBatches();
+    } catch(e) {
+      toast(`Error: ${e.message}`);
+    } finally {
+      btn.disabled = false; btn.textContent = 'Yes, Delete';
+    }
+  }
+
+  // ── Side edit panel ───────────────────────────────────────────────────────
+
+  const EDITABLE_FIELDS = [
+    'display_title', 'set_name', 'card_number', 'rarity', 'condition',
+    'publisher_brand', 'year',
+    'bullet_1', 'bullet_2', 'bullet_3',
+    'final_price', 'base_price', 'price_source',
+  ];
+  const READONLY_FIELDS = ['ai_notes', 'search_query', 'inventory_number', 'status', 'barcode'];
+
+  function openPanel(data) {
+    _currentCardId = data.id;
+
+    // Populate all fields
+    [...EDITABLE_FIELDS, ...READONLY_FIELDS].forEach(f => {
+      const el = document.getElementById(`pf-${f}`);
+      if (el) el.value = (data[f] ?? '');
+    });
+
+    // Live char count on title
+    const titleEl = document.getElementById('pf-display_title');
+    updateCharCount(titleEl, 'title-count', 40);
+
+    document.getElementById('panel-card-title').textContent =
+      `#${data.sequence_num} — ${(data.card_name || data.display_title || 'Card').substring(0, 30)}`;
+
+    // Thumbnails — image_path is comma-separated absolute paths; extract filenames
+    const imgWrap = document.getElementById('panel-images');
+    const imgPaths = (data.image_path || '').split(',').map(p => p.trim()).filter(Boolean);
+    if (imgPaths.length) {
+      imgWrap.style.display = 'flex';
+      imgWrap.innerHTML = imgPaths.map(p => {
+        const filename = p.replace(/\\/g, '/').split('/').pop();
+        return `<img src="/uploads/${filename}"
+                     style="height:120px;width:auto;max-width:48%;border-radius:6px;
+                            border:1px solid #e2e8f0;object-fit:contain;background:#f8fafc;cursor:zoom-in;"
+                     onclick="window.open(this.src,'_blank')"
+                     title="Click to open full size">`;
+      }).join('');
+    } else {
+      imgWrap.style.display = 'none';
+      imgWrap.innerHTML = '';
+    }
+
+    document.getElementById('edit-panel').classList.add('open');
+    document.getElementById('main-area').classList.add('panel-open');
+
+    // Hide the save-status confirmation badge when reopening
+    document.getElementById('save-status').style.display = 'none';
+  }
+
+  function closePanel() {
+    document.getElementById('edit-panel').classList.remove('open');
+    document.getElementById('main-area').classList.remove('panel-open');
+    _currentCardId = null;
+  }
+
+  function updateCharCount(input, countId, limit) {
+    const len = input.value.length;
+    const el  = document.getElementById(countId);
+    el.textContent = `${len} / ${limit} chars`;
+    el.className   = 'char-count' + (len > limit ? ' warn' : '');
+  }
+
+  async function savePanel() {
+    if (!_currentCardId) return;
+    const btn = document.getElementById('save-panel-btn');
+    btn.disabled = true; btn.textContent = 'Saving…';
+
+    const fields = {};
+    EDITABLE_FIELDS.forEach(f => {
+      const el = document.getElementById(`pf-${f}`);
+      if (!el) return;
+      if (f === 'final_price' || f === 'base_price') {
+        fields[f] = parseFloat(el.value) || 0;
+      } else {
+        fields[f] = el.value;
+      }
+    });
+    // Keep card_name in sync with display_title
+    if (fields.display_title) fields.card_name = fields.display_title;
+
+    try {
+      await fetch(`/api/cards/${_currentCardId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fields }),
+      });
+      const status = document.getElementById('save-status');
+      status.style.display = 'inline';
+      setTimeout(() => { status.style.display = 'none'; }, 2500);
+      loadCards(); // refresh grid to reflect edits
+    } catch(e) {
+      toast(`Save failed: ${e.message}`);
+    } finally {
+      btn.disabled = false; btn.textContent = 'Save Changes';
+    }
+  }
+
+  // Delete from inside the panel
+  function deleteCurrent() {
+    if (!_currentCardId) return;
+    _pendingDeleteIds = [_currentCardId];
+
+    // Find status from the grid
+    let status = '';
+    if (table) {
+      const row = table.getRows().find(r => r.getData().id === _currentCardId);
+      if (row) status = row.getData().status || '';
+    }
+
+    const hasUploaded = ['uploaded', 'printed'].includes(status);
+    let msg = 'Delete this card?';
+    if (hasUploaded) msg += ' This card has already been uploaded to Sandpiper.';
+    document.getElementById('delete-modal-msg').textContent = msg;
+
+    closePanel();
+    document.getElementById('delete-modal').style.display = 'flex';
+  }
+
+  // ── Toast ─────────────────────────────────────────────────────────────────
+
+  function toast(msg) {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.style.display = 'block';
+    setTimeout(() => { el.style.display = 'none'; }, 3000);
+  }
+
+  // ── Init ──────────────────────────────────────────────────────────────────
+
+  loadBatches();
+  loadCards();
+  setInterval(loadCards, 15000);
+</script>
+</body>
+</html>
