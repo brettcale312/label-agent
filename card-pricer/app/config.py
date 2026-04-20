@@ -21,6 +21,10 @@ OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 # Set ENABLE_MARKET_PRICING=false to skip PriceCharting/eBay and rely on AI only.
 # Useful when comps are unreliable (wrong card matches) or you want pure AI pricing.
 ENABLE_MARKET_PRICING: bool = os.getenv("ENABLE_MARKET_PRICING", "false").lower() == "true"
+
+# Set ENABLE_MULTIPLIERS=true to apply condition + booth markup multipliers on top of
+# the base price. When false, the AI midpoint is used directly (just rounding applied).
+ENABLE_MULTIPLIERS: bool = os.getenv("ENABLE_MULTIPLIERS", "false").lower() == "true"
 ENABLE_EBAY: bool = os.getenv("ENABLE_EBAY_TOOL", "true").lower() == "true"
 ENABLE_PRICECHARTING: bool = bool(os.getenv("PRICECHARTING_API_KEY"))
 

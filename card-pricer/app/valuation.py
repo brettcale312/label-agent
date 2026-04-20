@@ -18,6 +18,8 @@ import math
 import logging
 from typing import Optional
 
+from .config import ENABLE_MULTIPLIERS
+
 logger = logging.getLogger("valuation")
 
 
@@ -147,23 +149,26 @@ def compute_price(
 
     base_price = round(base, 2)
 
-    # ── Condition multiplier ─────────────────────────────────────────────────
-    base *= _condition_multiplier(condition)
+    if ENABLE_MULTIPLIERS:
+        # ── Condition multiplier ─────────────────────────────────────────────
+        base *= _condition_multiplier(condition)
 
-    # ── Card category nudge (5%) ─────────────────────────────────────────────
-    base *= 1.05
+        # ── Card category nudge (5%) ─────────────────────────────────────────
+        base *= 1.05
 
-    # ── Booth markup ─────────────────────────────────────────────────────────
-    base = _booth_markup(base)
+        # ── Booth markup ─────────────────────────────────────────────────────
+        base = _booth_markup(base)
+    # else: use the AI midpoint directly — it already reflects booth pricing context
 
-    # ── Rounding ─────────────────────────────────────────────────────────────
+    # ── Rounding (always applied) ─────────────────────────────────────────────
     final_price = apply_booth_rounding(base)
 
     price_source = " + ".join(source_parts)
 
     logger.info(
         f"[valuation] base_price=${base_price:.2f} | condition={condition!r} "
-        f"| final=${final_price:.2f} | sources: {price_source}"
+        f"| final=${final_price:.2f} | multipliers={'on' if ENABLE_MULTIPLIERS else 'off'} "
+        f"| sources: {price_source}"
     )
 
     return base_price, final_price, price_source
