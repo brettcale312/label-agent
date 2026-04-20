@@ -17,7 +17,7 @@ from .vision import analyze_card
 from .pricing import fetch_market_prices
 from .valuation import compute_price
 from .database import get_next_inv_number
-from .config import ENABLE_MARKET_PRICING
+from .config import ENABLE_MARKET_PRICING, AI_PROVIDER
 
 FAN_ART_BULLET = "Custom/Fan Art - Not Official Pokemon TCG Product"
 
@@ -70,14 +70,15 @@ def _build_ai_notes(vision, pc_median: Optional[float], ebay_median: Optional[fl
     """Generate a brief AI notes string for the review page."""
     lines = []
 
+    model_label = "ChatGPT estimate" if AI_PROVIDER == "openai" else "Claude estimate"
     conf = vision.ai_price_confidence or "low"
     if vision.ai_price_low and vision.ai_price_high:
         lines.append(
-            f"AI estimate: ${vision.ai_price_low:.2f}–${vision.ai_price_high:.2f} "
+            f"{model_label}: ${vision.ai_price_low:.2f}–${vision.ai_price_high:.2f} "
             f"({conf} confidence)"
         )
     elif vision.ai_price_low:
-        lines.append(f"AI estimate: ~${vision.ai_price_low:.2f} ({conf} confidence)")
+        lines.append(f"{model_label}: ~${vision.ai_price_low:.2f} ({conf} confidence)")
 
     if market_skipped:
         lines.append("Market comps disabled — AI pricing only")
