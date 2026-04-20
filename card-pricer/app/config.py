@@ -18,6 +18,9 @@ ANTHROPIC_MODEL: str = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 # ── Market Tools ──────────────────────────────────────────────────────────────
+# Set ENABLE_MARKET_PRICING=false to skip PriceCharting/eBay and rely on AI only.
+# Useful when comps are unreliable (wrong card matches) or you want pure AI pricing.
+ENABLE_MARKET_PRICING: bool = os.getenv("ENABLE_MARKET_PRICING", "false").lower() == "true"
 ENABLE_EBAY: bool = os.getenv("ENABLE_EBAY_TOOL", "true").lower() == "true"
 ENABLE_PRICECHARTING: bool = bool(os.getenv("PRICECHARTING_API_KEY"))
 

@@ -17,6 +17,7 @@ from .vision import analyze_card
 from .pricing import fetch_market_prices
 from .valuation import compute_price
 from .database import get_next_inv_number
+from .config import ENABLE_MARKET_PRICING
 
 FAN_ART_BULLET = "Custom/Fan Art - Not Official Pokemon TCG Product"
 
@@ -65,28 +66,31 @@ def _trim_bullet(text: str) -> str:
     return trimmed
 
 
-def _build_ai_notes(vision, pc_median: Optional[float], ebay_median: Optional[float]) -> str:
+def _build_ai_notes(vision, pc_median: Optional[float], ebay_median: Optional[float], market_skipped: bool = False) -> str:
     """Generate a brief AI notes string for the review page."""
     lines = []
 
     conf = vision.ai_price_confidence or "low"
     if vision.ai_price_low and vision.ai_price_high:
         lines.append(
-            f"Claude estimate: ${vision.ai_price_low:.2f}–${vision.ai_price_high:.2f} "
-            f"({conf} confidence based on training knowledge)"
+            f"AI estimate: ${vision.ai_price_low:.2f}–${vision.ai_price_high:.2f} "
+            f"({conf} confidence)"
         )
     elif vision.ai_price_low:
-        lines.append(f"Claude estimate: ~${vision.ai_price_low:.2f} ({conf} confidence)")
+        lines.append(f"AI estimate: ~${vision.ai_price_low:.2f} ({conf} confidence)")
 
-    if pc_median:
-        lines.append(f"PriceCharting found: ${pc_median:.2f}")
+    if market_skipped:
+        lines.append("Market comps disabled — AI pricing only")
     else:
-        lines.append("PriceCharting: no match found")
+        if pc_median:
+            lines.append(f"PriceCharting: ${pc_median:.2f}")
+        else:
+            lines.append("PriceCharting: no match")
 
-    if ebay_median:
-        lines.append(f"eBay active listings median: ${ebay_median:.2f}")
-    else:
-        lines.append("eBay: no match found")
+        if ebay_median:
+            lines.append(f"eBay median: ${ebay_median:.2f}")
+        else:
+            lines.append("eBay: no match")
 
     if vision.rarity:
         lines.append(f"Rarity: {vision.rarity}")
@@ -107,11 +111,16 @@ async def run_agent(image_bytes_list: list[bytes], batch_notes: str = "") -> dic
     logger.info(f"[agent] Identified: {vision.title!r} | set={vision.set_name!r} | fan_art={vision.is_fan_art}")
 
     # ── Step 2: Market pricing ────────────────────────────────────────────────
-    if vision.is_fan_art:
-        # Fan art has no reliable set/number to search — skip market tools entirely,
-        # use Claude's price estimate only.
+    market_skipped = False
+    if not ENABLE_MARKET_PRICING:
+        logger.info("[agent] Market pricing disabled (ENABLE_MARKET_PRICING=false) — using AI estimate only")
+        pc_median, ebay_median = None, None
+        market_skipped = True
+    elif vision.is_fan_art:
+        # Fan art has no reliable set/number to search — skip market tools entirely
         logger.info("[agent] Fan art detected — skipping market pricing, using AI estimate only")
         pc_median, ebay_median = None, None
+        market_skipped = True
     else:
         logger.info("[agent] Step 2: Market pricing")
         pc_median, ebay_median = await fetch_market_prices(vision.search_query or vision.title)
@@ -128,7 +137,7 @@ async def run_agent(image_bytes_list: list[bytes], batch_notes: str = "") -> dic
 
     # ── Build output ──────────────────────────────────────────────────────────
     full_title = _build_full_title(vision)
-    ai_notes = _build_ai_notes(vision, pc_median, ebay_median)
+    ai_notes = _build_ai_notes(vision, pc_median, ebay_median, market_skipped=market_skipped)
 
     # Fan art: override bullet_2 automatically
     bullet_2 = vision.bullet_2

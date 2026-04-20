@@ -64,10 +64,17 @@ For bullet_1, bullet_2, bullet_3:
 - Specific beats generic: "First-edition holo" beats "Rare collectible card"
 
 For ai_price_low / ai_price_high:
-- Give raw secondary market value (ungraded, in the condition you see), NOT a retail markup
+- This is for an antique mall booth targeting casual impulse buyers — people who see something
+  cool and grab it without doing research. Price accordingly: aim slightly above secondary market
+  (typically 20–40% above raw market value) because impulse buyers expect a small premium and
+  that's the norm for antique/collectible booths. Do NOT price at rock-bottom eBay sold prices.
 - Base on your training knowledge of this specific card's demand, print run, set, and rarity
-- Even if uncertain, give your best estimate — the user will review and can adjust
-- If it's a very common card worth under $1, set ai_price_low: 0.25 and ai_price_high: 0.75
+- Even if uncertain, give your best estimate — the owner will review and can adjust
+- Minimums: nothing under $1.00. Common bulk cards that might go for $0.25 online should be
+  priced at $1.00–$2.00 at a booth — customers expect that.
+- For a card you know well (high confidence): price at the middle of what you'd expect a local
+  card shop to charge, not the lowest eBay listing
+- Examples of the right mindset: a card worth $5 on eBay → suggest $6–$8 here; a $20 card → $24–$28
 
 For search_query:
 - Make it specific enough to find THIS exact card (include number, set, game if known)
