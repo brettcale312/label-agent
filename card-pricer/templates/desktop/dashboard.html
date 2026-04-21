@@ -122,6 +122,13 @@
     /* Tabulator row hover hint */
     .tabulator-row:hover { cursor: pointer; }
 
+    /* Row currently open in the side panel */
+    .tabulator-row.row-active,
+    .tabulator-row.row-active:hover {
+      background: #eff6ff !important;
+      border-left: 3px solid #1a73e8 !important;
+    }
+
     /* Status badges */
     .status-pending  { background:#fef3c7;color:#92400e;border-radius:4px;padding:2px 6px;font-size:0.78em; }
     .status-approved { background:#dbeafe;color:#1e40af;border-radius:4px;padding:2px 6px;font-size:0.78em; }
@@ -489,8 +496,15 @@
     return String(cell.getValue() || '');
   }
 
+  function rehighlightActiveRow() {
+    if (!table) return;
+    table.getRows().forEach(row => {
+      row.getElement().classList.toggle('row-active', row.getData().id === _currentCardId);
+    });
+  }
+
   function initGrid(data) {
-    if (table) { return table.replaceData(data); }
+    if (table) { return table.replaceData(data).then(rehighlightActiveRow); }
 
     table = new Tabulator('#card-grid', {
       data,
@@ -816,12 +830,15 @@
 
     // Hide the save-status confirmation badge when reopening
     document.getElementById('save-status').style.display = 'none';
+
+    rehighlightActiveRow();
   }
 
   function closePanel() {
     document.getElementById('edit-panel').classList.remove('open');
     document.getElementById('main-area').classList.remove('panel-open');
     _currentCardId = null;
+    rehighlightActiveRow();
   }
 
   function updateCharCount(input, countId, limit) {
