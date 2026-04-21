@@ -909,7 +909,10 @@
 
   loadBatches();
   loadCards();
-  setInterval(loadCards, 15000);
+  setInterval(() => {
+    const savedIds = getSelectedIds();
+    loadCards().then(() => restoreSelection(savedIds));
+  }, 15000);
 </script>
 </body>
 </html>
