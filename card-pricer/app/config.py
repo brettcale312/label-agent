@@ -12,10 +12,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ── AI Provider ───────────────────────────────────────────────────────────────
-# Set to "anthropic" or "openai"
+# Set to "anthropic", "openai", or "gemini"
 AI_PROVIDER: str = os.getenv("AI_PROVIDER", "anthropic").lower()
 ANTHROPIC_MODEL: str = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
-OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o")
+GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 
 # ── Market Tools ──────────────────────────────────────────────────────────────
 # Set ENABLE_MARKET_PRICING=false to skip PriceCharting/eBay and rely on AI only.

@@ -70,7 +70,12 @@ def _build_ai_notes(vision, pc_median: Optional[float], ebay_median: Optional[fl
     """Generate a brief AI notes string for the review page."""
     lines = []
 
-    model_label = "ChatGPT estimate" if AI_PROVIDER == "openai" else "Claude estimate"
+    if AI_PROVIDER == "openai":
+        model_label = "ChatGPT estimate"
+    elif AI_PROVIDER == "gemini":
+        model_label = "Gemini estimate"
+    else:
+        model_label = "Claude estimate"
     conf = vision.ai_price_confidence or "low"
     if vision.ai_price_low and vision.ai_price_high:
         lines.append(

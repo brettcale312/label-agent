@@ -13,7 +13,7 @@ import re
 import logging
 from typing import Optional
 
-from .config import AI_PROVIDER, ANTHROPIC_MODEL, OPENAI_MODEL
+from .config import AI_PROVIDER, ANTHROPIC_MODEL, OPENAI_MODEL, GEMINI_MODEL, GEMINI_API_KEY
 from .models import CardVisionResult
 
 logger = logging.getLogger("vision")
@@ -198,6 +198,26 @@ async def _analyze_openai(image_bytes_list: list[bytes], batch_notes: str = "") 
     return _build_result(_parse_json(raw))
 
 
+async def _analyze_gemini(image_bytes_list: list[bytes], batch_notes: str = "") -> CardVisionResult:
+    import google.generativeai as genai
+    import PIL.Image
+    import io
+
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel(GEMINI_MODEL)
+
+    # Convert raw bytes to PIL Images (what Gemini's SDK expects for inline images)
+    images = [PIL.Image.open(io.BytesIO(b)) for b in image_bytes_list]
+
+    prompt = _build_prompt(batch_notes)
+    # Gemini content list: [prompt_text, image1, image2, ...]
+    response = await model.generate_content_async([prompt] + images)
+
+    raw = response.text
+    logger.info(f"[vision] Gemini raw response length: {len(raw)}")
+    return _build_result(_parse_json(raw))
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Public interface
 # ─────────────────────────────────────────────────────────────────────────────
@@ -212,4 +232,6 @@ async def analyze_card(image_bytes_list: list[bytes], batch_notes: str = "") -> 
                 (f" | batch_notes={batch_notes!r}" if batch_notes else ""))
     if AI_PROVIDER == "openai":
         return await _analyze_openai(image_bytes_list, batch_notes=batch_notes)
+    if AI_PROVIDER == "gemini":
+        return await _analyze_gemini(image_bytes_list, batch_notes=batch_notes)
     return await _analyze_anthropic(image_bytes_list, batch_notes=batch_notes)
