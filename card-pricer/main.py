@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Request, UploadFile, HTTPException
+from fastapi import FastAPI, File, Form, Request, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -54,7 +54,14 @@ from pydantic import BaseModel
 load_dotenv()
 
 from app.agent import run_agent
-from app.config import LOCAL_IP, PORT, IOS_SHORTCUT_NAME
+from app.vision import extract_upc
+from app.config import (
+    LOCAL_IP, PORT, IOS_SHORTCUT_NAME,
+    ENABLE_GENERALIST_MODE, LABEL_FORMAT,
+    ENABLE_CATEGORY_PICKER, ENABLE_MAKERS_MARK_SLOT, ENABLE_UPC_SLOT,
+    ENABLE_EXTRA_PHOTOS, EXTRA_PHOTO_LIMIT, ENABLE_MOBILE_EDIT,
+    ENABLE_RANGE_PRICING, DEFAULT_CATEGORY, KNOWN_CATEGORIES,
+)
 from app.database import (
     init_db, create_batch, close_batch, get_batch, list_batches, get_open_batch,
     insert_card, get_card, list_cards, update_card, approve_cards,
@@ -62,7 +69,7 @@ from app.database import (
     mark_printed, delete_cards, delete_batch, archive_batch, unarchive_batch,
     prune_empty_batches, duplicate_card,
 )
-from app.sandpiper import create_item_and_barcode
+from app.sandpiper import create_item_and_barcode, update_price as sandpiper_update_price
 from app.sheets import append_row
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -85,6 +92,10 @@ LABELS_DIR = BASE_DIR / "labels"
 LABEL_SCRIPT = Path(os.getenv(
     "LABEL_SCRIPT_PATH",
     r"C:\dev\python\label_tools\2x2_TradingCard_Labels\make_card_2x2_labels.py"
+))
+LABEL_SCRIPT_4X3 = Path(os.getenv(
+    "LABEL_SCRIPT_4X3_PATH",
+    r"C:\dev\python\label_tools\4x3_Comic_Labels\make_comic_4x3_labels.py"
 ))
 
 for d in (UPLOADS_DIR, LABELS_DIR):
@@ -141,6 +152,7 @@ class UploadCardsRequest(BaseModel):
 
 class StartBatchRequest(BaseModel):
     notes: str = ""
+    category: Optional[str] = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -157,12 +169,33 @@ async def index(request: Request):
     return HTMLResponse(status_code=302, headers={"Location": "/dashboard"})
 
 
+def _feature_flags() -> dict:
+    """Flag bundle for templates — keeps UI toggles in one place."""
+    return {
+        "generalist_mode": ENABLE_GENERALIST_MODE,
+        "category_picker": ENABLE_CATEGORY_PICKER,
+        "makers_mark_slot": ENABLE_MAKERS_MARK_SLOT,
+        "upc_slot": ENABLE_UPC_SLOT,
+        "extra_photos": ENABLE_EXTRA_PHOTOS,
+        "extra_photo_limit": EXTRA_PHOTO_LIMIT,
+        "mobile_edit": ENABLE_MOBILE_EDIT,
+        "range_pricing": ENABLE_RANGE_PRICING,
+        "default_category": DEFAULT_CATEGORY,
+        "known_categories": KNOWN_CATEGORIES,
+    }
+
+
+@app.get("/api/config/flags")
+async def api_config_flags():
+    return _feature_flags()
+
+
 @app.get("/capture", response_class=HTMLResponse)
 async def capture_page(request: Request):
     open_batch = get_open_batch()
     return templates.TemplateResponse(
         "mobile/capture.html",
-        {"request": request, "open_batch": open_batch},
+        {"request": request, "open_batch": open_batch, "flags": _feature_flags()},
     )
 
 
@@ -171,7 +204,7 @@ async def dashboard_page(request: Request):
     batches = list_batches()
     return templates.TemplateResponse(
         "desktop/dashboard.html",
-        {"request": request, "batches": batches},
+        {"request": request, "batches": batches, "flags": _feature_flags()},
     )
 
 
@@ -189,12 +222,24 @@ async def print_page(request: Request):
 
 @app.post("/api/batch/start")
 async def api_batch_start(body: Optional[StartBatchRequest] = None):
-    """Create a new open batch. Auto-names by date/time. Optional notes for context."""
+    """Create a new open batch. Auto-names by date/time. Optional notes + category."""
     notes = body.notes if body else ""
+    category = (body.category if body else None) or None
+    if category and ENABLE_GENERALIST_MODE:
+        category = category.lower()
+        if category not in KNOWN_CATEGORIES:
+            category = "other"
+    elif not ENABLE_GENERALIST_MODE:
+        category = None  # ignore category when generalist mode is off
+
     name = f"Batch {datetime.now().strftime('%b %d %Y %I:%M %p')}"
-    batch_id = create_batch(name, notes)
-    logger.info(f"[batch] Started batch #{batch_id}: {name!r}" + (f" notes={notes!r}" if notes else ""))
-    return {"batch_id": batch_id, "name": name, "notes": notes}
+    batch_id = create_batch(name, notes, category=category)
+    logger.info(
+        f"[batch] Started batch #{batch_id}: {name!r}"
+        + (f" notes={notes!r}" if notes else "")
+        + (f" category={category!r}" if category else "")
+    )
+    return {"batch_id": batch_id, "name": name, "notes": notes, "category": category}
 
 
 @app.post("/api/batch/{batch_id}/archive")
@@ -259,10 +304,20 @@ async def api_get_batch(batch_id: int):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.post("/api/ingest")
-async def api_ingest(files: list[UploadFile] = File(...)):
+async def api_ingest(
+    files: list[UploadFile] = File(...),
+    category: Optional[str] = Form(None),
+    makers_mark: Optional[UploadFile] = File(None),
+    upc_image: Optional[UploadFile] = File(None),
+):
     """
-    Receive 1–3 card images, run the pricing agent, save card to DB.
+    Receive 1–N item images, run the pricing agent, save card to DB.
     Requires an open batch — returns 400 if none exists.
+
+    Optional form fields (all flag-gated):
+      category    — overrides the batch's default category for this item
+      makers_mark — extra photo of a maker's mark / signature (non-card items)
+      upc_image   — photo of a UPC barcode; AI extracts the digits for precise eBay lookup
     """
     open_batch = get_open_batch()
     if not open_batch:
@@ -272,7 +327,22 @@ async def api_ingest(files: list[UploadFile] = File(...)):
         )
 
     batch_id = open_batch["id"]
-    logger.info(f"[ingest] {len(files)} image(s) → batch #{batch_id}")
+
+    # Resolve effective category: per-item > batch > default
+    if ENABLE_GENERALIST_MODE:
+        effective_category = (
+            (category or "").lower().strip()
+            or (open_batch.get("category") or "").lower().strip()
+            or DEFAULT_CATEGORY
+        )
+        if effective_category not in KNOWN_CATEGORIES:
+            effective_category = "other"
+    else:
+        effective_category = "card"
+
+    logger.info(
+        f"[ingest] {len(files)} image(s) → batch #{batch_id} | category={effective_category}"
+    )
 
     # Read images
     image_bytes_list = []
@@ -280,18 +350,43 @@ async def api_ingest(files: list[UploadFile] = File(...)):
     for f in files:
         data = await f.read()
         image_bytes_list.append(data)
-        # Save image to disk
         ext = Path(f.filename or "card.jpg").suffix or ".jpg"
         filename = f"{uuid.uuid4().hex[:8]}{ext}"
         img_path = UPLOADS_DIR / filename
         img_path.write_bytes(data)
         image_paths.append(str(img_path))
 
+    # Optional maker's-mark image — stored separately, not sent to vision
+    makers_mark_path = None
+    if ENABLE_MAKERS_MARK_SLOT and makers_mark is not None:
+        mm_data = await makers_mark.read()
+        if mm_data:
+            ext = Path(makers_mark.filename or "mark.jpg").suffix or ".jpg"
+            fn = f"{uuid.uuid4().hex[:8]}_mark{ext}"
+            mm_path = UPLOADS_DIR / fn
+            mm_path.write_bytes(mm_data)
+            makers_mark_path = str(mm_path)
+
+    # Optional UPC image — extract digits via AI for precise eBay lookup
+    upc = None
+    if ENABLE_UPC_SLOT and upc_image is not None:
+        upc_data = await upc_image.read()
+        if upc_data:
+            upc = await extract_upc(upc_data)
+            if upc:
+                logger.info(f"[ingest] UPC extracted: {upc}")
+
     # Run agent (vision → pricing → valuation)
-    # Pass batch notes as context so the vision model knows what kind of cards these are
     batch_notes = open_batch.get("notes", "")
-    result = await run_agent(image_bytes_list, batch_notes=batch_notes)
+    result = await run_agent(
+        image_bytes_list,
+        batch_notes=batch_notes,
+        category=effective_category,
+        upc=upc,
+    )
     result["image_path"] = ",".join(image_paths)
+    if makers_mark_path:
+        result["makers_mark_image_path"] = makers_mark_path
 
     # Save to database
     card_id = insert_card(batch_id, result)
@@ -307,6 +402,10 @@ async def api_ingest(files: list[UploadFile] = File(...)):
         "card_id": card_id,
         "title": result.get("display_title") or result.get("title"),
         "price": result.get("price"),
+        "ai_price_low": result.get("ai_price_low"),
+        "ai_price_high": result.get("ai_price_high"),
+        "ai_price_confidence": result.get("ai_price_confidence"),
+        "upc": upc,
         "batch_id": batch_id,
         "sequence_num": card["sequence_num"] if card else None,
     }
@@ -335,10 +434,35 @@ async def api_get_card(card_id: int):
 
 @app.patch("/api/cards/{card_id}")
 async def api_update_card(card_id: int, body: UpdateCardRequest):
-    """Inline edit — update any card fields from the desktop grid."""
-    if not get_card(card_id):
+    """Inline edit — update any card fields from the desktop grid.
+
+    If final_price changes on an already-uploaded card, push the new price
+    to Sandpiper so the POS stays in sync with the dashboard.
+    """
+    before = get_card(card_id)
+    if not before:
         raise HTTPException(404, "Card not found")
+
     update_card(card_id, body.fields)
+
+    new_price = body.fields.get("final_price")
+    old_price = before.get("final_price")
+    price_changed = (
+        new_price is not None
+        and old_price is not None
+        and float(new_price) != float(old_price)
+    )
+    was_uploaded = before.get("status") in ("uploaded", "printed", "archived")
+    inv_num = before.get("inventory_number")
+
+    if price_changed and was_uploaded and inv_num:
+        try:
+            ok = await sandpiper_update_price(inv_num, float(new_price))
+            if not ok:
+                logger.warning(f"[patch] Sandpiper price-sync failed for card #{card_id}")
+        except Exception as e:
+            logger.error(f"[patch] Sandpiper price-sync error for card #{card_id}: {e}")
+
     return {"ok": True}
 
 
@@ -474,12 +598,66 @@ async def api_batch_upload(batch_id: int):
 # Label generation
 # ─────────────────────────────────────────────────────────────────────────────
 
+def pick_label_script(card: dict) -> tuple[Path, str]:
+    """
+    Choose the label script + format for a given card.
+    Returns (script_path, format_key) where format_key ∈ {"card_2x2", "antique_4x3"}.
+
+    LABEL_FORMAT env values:
+      auto         — card category → 2x2, everything else → 4x3
+      card_2x2     — force 2x2 regardless of category
+      antique_4x3  — force 4x3 regardless of category
+    """
+    fmt = (LABEL_FORMAT or "auto").lower()
+    if fmt == "card_2x2":
+        return LABEL_SCRIPT, "card_2x2"
+    if fmt == "antique_4x3":
+        return LABEL_SCRIPT_4X3, "antique_4x3"
+    # auto
+    category = (card.get("category") or "card").lower()
+    if ENABLE_GENERALIST_MODE and category != "card":
+        return LABEL_SCRIPT_4X3, "antique_4x3"
+    return LABEL_SCRIPT, "card_2x2"
+
+
+def _write_label_input(cards: list[dict], format_key: str, input_file: Path) -> None:
+    """Write the TSV input file matching the chosen label script's column contract."""
+    with open(input_file, "w", encoding="utf-8") as f:
+        for card in cards:
+            price = card.get("final_price") or 0
+            if format_key == "antique_4x3":
+                # 8 cols: Title, Bullet1, Bullet2, Bullet3, Publisher, Price, InventoryID, Barcode
+                publisher = card.get("maker") or card.get("publisher_brand") or ""
+                row = "\t".join([
+                    card.get("display_title") or card.get("card_name") or "",
+                    card.get("bullet_1") or "",
+                    card.get("bullet_2") or "",
+                    card.get("bullet_3") or "",
+                    publisher,
+                    f"${price:.2f}",
+                    card.get("inventory_number") or "",
+                    card.get("barcode") or "",
+                ])
+            else:
+                # card_2x2 — 7 cols: title, bullet_1, bullet_2, price_source, price, inv, barcode
+                row = "\t".join([
+                    card.get("display_title") or card.get("card_name") or "",
+                    card.get("bullet_1") or "",
+                    card.get("bullet_2") or "",
+                    card.get("price_source") or "",
+                    f"${price:.2f}",
+                    card.get("inventory_number") or "",
+                    card.get("barcode") or "",
+                ])
+            f.write(row + "\n")
+
+
 @app.post("/api/labels/generate")
 async def api_generate_labels(body: GenerateLabelsRequest):
     """
-    Generate a 2x2 PDF for selected card ids (in the order provided).
-    Calls the existing make_card_2x2_labels.py script.
-    Returns the filename of the generated PDF.
+    Generate a label PDF for selected card ids (in the order provided).
+    Script + format picked per the first card's category (all cards in one call
+    should share a format — mixed calls fall back to the first card's choice).
     """
     if not body.ids:
         raise HTTPException(400, "No card ids provided")
@@ -496,39 +674,26 @@ async def api_generate_labels(body: GenerateLabelsRequest):
     if not cards:
         raise HTTPException(400, "None of the selected cards have barcodes yet")
 
-    # Build tab-separated input file
-    # Columns: title, bullet_1, bullet_2, price_source, final_price, inventory_number, barcode
+    script_path, format_key = pick_label_script(cards[0])
+
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     input_file = LABELS_DIR / f"label_input_{ts}.txt"
     output_pdf = LABELS_DIR / f"labels_{ts}.pdf"
 
-    with open(input_file, "w", encoding="utf-8") as f:
-        for card in cards:
-            price = card.get("final_price") or 0
-            row = "\t".join([
-                card.get("display_title") or card.get("card_name") or "",
-                card.get("bullet_1") or "",
-                card.get("bullet_2") or "",
-                card.get("price_source") or "",
-                f"${price:.2f}",
-                card.get("inventory_number") or "",
-                card.get("barcode") or "",
-            ])
-            f.write(row + "\n")
+    _write_label_input(cards, format_key, input_file)
 
-    # Run the label script
-    if not LABEL_SCRIPT.exists():
+    if not script_path.exists():
         raise HTTPException(
             500,
-            f"Label script not found at {LABEL_SCRIPT}. "
-            "Set LABEL_SCRIPT_PATH in .env to point to make_card_2x2_labels.py"
+            f"Label script not found at {script_path}. "
+            f"Set LABEL_SCRIPT_PATH / LABEL_SCRIPT_4X3_PATH in .env."
         )
 
     # Use run_in_executor + subprocess.run — asyncio.create_subprocess_exec
     # raises NotImplementedError on Windows with SelectorEventLoop (uvicorn default)
     def _run_script():
         return subprocess.run(
-            [sys.executable, str(LABEL_SCRIPT), str(input_file), str(output_pdf)],
+            [sys.executable, str(script_path), str(input_file), str(output_pdf)],
             capture_output=True, text=True,
         )
 

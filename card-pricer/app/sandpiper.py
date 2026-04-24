@@ -155,3 +155,73 @@ async def create_item_and_barcode(
         barcode = fields[0] if fields and fields[0].isdigit() else "#"
         logger.info(f"[sandpiper] Barcode: {barcode}")
         return barcode
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Price updates (post-upload edits)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _find_item_id(inv_num: str) -> str | None:
+    """Look up a Sandpiper item id from its inventory number."""
+    token = await _login()
+    account_id = os.getenv("SANDPIPER_ACCOUNT_ID")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    async with httpx.AsyncClient() as client:
+        r = await client.get(
+            f"https://app.sandpiperhq.com/api/items/v2/{account_id}/search",
+            params={"inventoryNumber": inv_num},
+            headers=headers,
+            timeout=20,
+        )
+        r.raise_for_status()
+        results = r.json()
+
+    if not results:
+        return None
+    if isinstance(results, list):
+        for item in results:
+            if item.get("inventoryNumber") == inv_num:
+                return item.get("id")
+        return results[0].get("id") if results else None
+    if isinstance(results, dict):
+        return results.get("id")
+    return None
+
+
+async def update_price(inv_num: str, new_price_dollars: float) -> bool:
+    """
+    Update the asking price of an already-uploaded Sandpiper item.
+    Returns True on success, False on failure. Logs details on error.
+    """
+    if not inv_num:
+        logger.warning("[sandpiper] update_price called with empty inv_num")
+        return False
+
+    token = await _login()
+    account_id = os.getenv("SANDPIPER_ACCOUNT_ID")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    item_id = await _find_item_id(inv_num)
+    if not item_id:
+        logger.warning(f"[sandpiper] update_price: item not found for inv {inv_num}")
+        return False
+
+    async with httpx.AsyncClient() as client:
+        r = await client.post(
+            f"https://app.sandpiperhq.com/api/items/v2/{account_id}/update",
+            json={
+                "id": item_id,
+                "inventoryNumber": inv_num,
+                "askingPrice": int(round(new_price_dollars * 100)),
+            },
+            headers=headers,
+            timeout=20,
+        )
+
+    if r.status_code >= 400:
+        logger.error(f"[sandpiper] update_price failed ({r.status_code}): {r.text[:200]}")
+        return False
+
+    logger.info(f"[sandpiper] Updated price for {inv_num} → ${new_price_dollars:.2f}")
+    return True

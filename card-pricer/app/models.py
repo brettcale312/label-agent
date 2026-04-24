@@ -9,7 +9,8 @@ from typing import Optional
 
 
 class CardVisionResult(BaseModel):
-    """Raw output from the vision step."""
+    """Raw output from the vision step. Fields after `is_fan_art` are used only
+    in generalist (non-card) mode and stay blank/None for card items."""
     title: str = ""
     set_name: str = ""
     card_number: str = ""
@@ -28,6 +29,12 @@ class CardVisionResult(BaseModel):
     search_query: str = ""
     # Fan art / custom card detection
     is_fan_art: bool = False
+    # Generalist fields — populated by the antique prompt, empty for cards
+    category: str = ""
+    era: str = ""
+    maker: str = ""
+    material: str = ""
+    dimensions: str = ""
 
 
 # Google Sheets column order for cards (matches existing Apps Script)

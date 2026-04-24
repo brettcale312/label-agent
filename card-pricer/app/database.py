@@ -96,23 +96,40 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_cards_status
                 ON cards(status);
         """)
-        # Live migration: add notes column to existing databases
-        try:
-            conn.execute("ALTER TABLE batches ADD COLUMN notes TEXT NOT NULL DEFAULT ''")
-        except Exception:
-            pass  # Column already exists
+        # Live migration: add columns to existing databases. Each ALTER is
+        # wrapped individually so later columns still apply when earlier ones
+        # already exist. Ignore "duplicate column" errors.
+        _live_migrations = [
+            "ALTER TABLE batches ADD COLUMN notes TEXT NOT NULL DEFAULT ''",
+            # Generalist-mode (Phase 1) columns — unused when ENABLE_GENERALIST_MODE=false
+            "ALTER TABLE batches ADD COLUMN category TEXT",
+            "ALTER TABLE cards   ADD COLUMN category TEXT",
+            "ALTER TABLE cards   ADD COLUMN era TEXT",
+            "ALTER TABLE cards   ADD COLUMN maker TEXT",
+            "ALTER TABLE cards   ADD COLUMN material TEXT",
+            "ALTER TABLE cards   ADD COLUMN dimensions TEXT",
+            "ALTER TABLE cards   ADD COLUMN makers_mark_image_path TEXT",
+            "ALTER TABLE cards   ADD COLUMN price_user_confirmed INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE cards   ADD COLUMN upc TEXT",
+        ]
+        for stmt in _live_migrations:
+            try:
+                conn.execute(stmt)
+            except Exception:
+                pass  # Column already exists
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Batch operations
 # ─────────────────────────────────────────────────────────────────────────────
 
-def create_batch(name: str, notes: str = "") -> int:
+def create_batch(name: str, notes: str = "", category: Optional[str] = None) -> int:
     """Create a new open batch. Returns new batch id."""
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO batches (name, notes, status, created_at) VALUES (?, ?, 'open', ?)",
-            (name, notes or "", _now()),
+            "INSERT INTO batches (name, notes, status, created_at, category) "
+            "VALUES (?, ?, 'open', ?, ?)",
+            (name, notes or "", _now(), category),
         )
         return cur.lastrowid
 
@@ -238,7 +255,9 @@ def insert_card(batch_id: int, data: dict) -> int:
                 ai_price_low, ai_price_high, ai_price_confidence,
                 inventory_number, barcode,
                 image_path, search_query, ai_notes,
-                created_at
+                category, era, maker, material, dimensions,
+                makers_mark_image_path, price_user_confirmed,
+                upc, created_at
             ) VALUES (
                 :batch_id, :sequence_num, 'pending',
                 :card_name, :set_name, :card_number, :display_title,
@@ -248,7 +267,9 @@ def insert_card(batch_id: int, data: dict) -> int:
                 :ai_price_low, :ai_price_high, :ai_price_confidence,
                 :inventory_number, :barcode,
                 :image_path, :search_query, :ai_notes,
-                :created_at
+                :category, :era, :maker, :material, :dimensions,
+                :makers_mark_image_path, :price_user_confirmed,
+                :upc, :created_at
             )
         """, {
             "batch_id": batch_id,
@@ -275,6 +296,14 @@ def insert_card(batch_id: int, data: dict) -> int:
             "image_path": data.get("image_path", ""),
             "search_query": data.get("search_query", ""),
             "ai_notes": data.get("ai_notes", ""),
+            "category": data.get("category"),
+            "era": data.get("era"),
+            "maker": data.get("maker"),
+            "material": data.get("material"),
+            "dimensions": data.get("dimensions"),
+            "makers_mark_image_path": data.get("makers_mark_image_path"),
+            "price_user_confirmed": 1 if data.get("price_user_confirmed") else 0,
+            "upc": data.get("upc"),
             "created_at": _now(),
         })
         return cur.lastrowid
@@ -327,6 +356,9 @@ def update_card(card_id: int, fields: dict):
         "price_source", "base_price", "final_price",
         "inventory_number", "barcode", "sandpiper_error",
         "status", "ai_notes", "uploaded_at", "printed_at",
+        # Generalist fields
+        "category", "era", "maker", "material", "dimensions",
+        "makers_mark_image_path", "price_user_confirmed", "upc",
     }
     clean = {k: v for k, v in fields.items() if k in allowed}
     if not clean:
@@ -401,6 +433,8 @@ def duplicate_card(card_id: int) -> Optional[int]:
                 ai_price_low, ai_price_high, ai_price_confidence,
                 inventory_number, barcode,
                 image_path, search_query, ai_notes,
+                category, era, maker, material, dimensions,
+                makers_mark_image_path, price_user_confirmed,
                 created_at
             ) VALUES (
                 ?,?,  'pending',
@@ -409,6 +443,8 @@ def duplicate_card(card_id: int) -> Optional[int]:
                 ?,?,?,  ?,?,?,
                 ?,?,
                 ?,?,?,
+                ?,?,?,?,?,
+                ?,?,
                 ?
             )
         """, (
@@ -420,6 +456,9 @@ def duplicate_card(card_id: int) -> Optional[int]:
             card["ai_price_low"], card["ai_price_high"], card["ai_price_confidence"],
             inv, "",
             card["image_path"], card["search_query"], card["ai_notes"],
+            card.get("category"), card.get("era"), card.get("maker"),
+            card.get("material"), card.get("dimensions"),
+            card.get("makers_mark_image_path"), card.get("price_user_confirmed") or 0,
             _now(),
         ))
         return cur.lastrowid

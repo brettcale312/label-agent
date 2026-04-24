@@ -342,42 +342,83 @@
         <span class="chevron">▼</span>
       </div>
       <div class="details-body" style="display:none;">
-        <!-- Card identity -->
-        <div class="two-col" style="margin-top:0.6em;">
-          <div class="panel-field">
-            <label>Set Name</label>
-            <input type="text" id="pf-set_name" placeholder="e.g. Champions Path">
+        <!-- Card-only identity block -->
+        <div class="card-only">
+          <div class="two-col" style="margin-top:0.6em;">
+            <div class="panel-field">
+              <label>Set Name</label>
+              <input type="text" id="pf-set_name" placeholder="e.g. Champions Path">
+            </div>
+            <div class="panel-field">
+              <label>Card #</label>
+              <input type="text" id="pf-card_number" placeholder="e.g. 074/073">
+            </div>
           </div>
-          <div class="panel-field">
-            <label>Card #</label>
-            <input type="text" id="pf-card_number" placeholder="e.g. 074/073">
+          <div class="two-col">
+            <div class="panel-field">
+              <label>Rarity</label>
+              <input type="text" id="pf-rarity" placeholder="e.g. Rainbow Rare">
+            </div>
+            <div class="panel-field">
+              <label>Condition</label>
+              <select id="pf-condition">
+                <option>Mint/NM</option>
+                <option>Good/VG</option>
+                <option>Fair/GD</option>
+                <option>Poor</option>
+              </select>
+            </div>
           </div>
-        </div>
-        <div class="two-col">
-          <div class="panel-field">
-            <label>Rarity</label>
-            <input type="text" id="pf-rarity" placeholder="e.g. Rainbow Rare">
+          <div class="two-col">
+            <div class="panel-field">
+              <label>Brand / Publisher</label>
+              <input type="text" id="pf-publisher_brand" placeholder="e.g. Pokemon">
+            </div>
+            <div class="panel-field">
+              <label>Year</label>
+              <input type="text" id="pf-year" placeholder="e.g. 2022">
+            </div>
           </div>
-          <div class="panel-field">
-            <label>Condition</label>
-            <select id="pf-condition">
-              <option>Mint/NM</option>
-              <option>Good/VG</option>
-              <option>Fair/GD</option>
-              <option>Poor</option>
-            </select>
+        </div><!-- /card-only -->
+
+        <!-- Generalist-only (antique) identity block -->
+        <div class="noncard-only" style="display:none;">
+          <div class="two-col" style="margin-top:0.6em;">
+            <div class="panel-field">
+              <label>Category</label>
+              <input type="text" id="pf-category" placeholder="e.g. pottery">
+            </div>
+            <div class="panel-field">
+              <label>Era</label>
+              <input type="text" id="pf-era" placeholder="e.g. Mid-century">
+            </div>
           </div>
-        </div>
-        <div class="two-col">
-          <div class="panel-field">
-            <label>Brand / Publisher</label>
-            <input type="text" id="pf-publisher_brand" placeholder="e.g. Pokemon">
+          <div class="two-col">
+            <div class="panel-field">
+              <label>Maker / Brand</label>
+              <input type="text" id="pf-maker" placeholder="e.g. Fenton">
+            </div>
+            <div class="panel-field">
+              <label>Condition</label>
+              <select id="pf-condition-nc">
+                <option>Mint/NM</option>
+                <option>Good/VG</option>
+                <option>Fair/GD</option>
+                <option>Poor</option>
+              </select>
+            </div>
           </div>
-          <div class="panel-field">
-            <label>Year</label>
-            <input type="text" id="pf-year" placeholder="e.g. 2022">
+          <div class="two-col">
+            <div class="panel-field">
+              <label>Material</label>
+              <input type="text" id="pf-material" placeholder="e.g. Porcelain">
+            </div>
+            <div class="panel-field">
+              <label>Dimensions</label>
+              <input type="text" id="pf-dimensions" placeholder="e.g. ~8 in tall">
+            </div>
           </div>
-        </div>
+        </div><!-- /noncard-only -->
         <div class="panel-field">
           <label>Bullet 3 <span style="color:#94a3b8;font-weight:400">(stored, not printed)</span></label>
           <textarea id="pf-bullet_3" rows="2"></textarea>
@@ -394,6 +435,10 @@
           </div>
         </div>
         <!-- Read-only info -->
+        <div class="panel-field">
+          <label>UPC</label>
+          <input type="text" id="pf-upc" class="readonly" readonly tabindex="-1" placeholder="—">
+        </div>
         <div class="panel-field">
           <label>Search Query <span style="color:#94a3b8;font-weight:400">(PriceCharting &amp; eBay)</span></label>
           <input type="text" id="pf-search_query" class="readonly" readonly tabindex="-1">
@@ -488,7 +533,15 @@
 
   function priceFormatter(cell) {
     const v = cell.getValue();
-    return `<strong style="color:#1a73e8">$${(v || 0).toFixed(2)}</strong>`;
+    if (v != null && v > 0) {
+      return `<strong style="color:#1a73e8">$${parseFloat(v).toFixed(2)}</strong>`;
+    }
+    // Range-priced item — show AI range from the row data
+    const row = cell.getRow().getData();
+    if (row.ai_price_low != null) {
+      return `<span style="color:#b45309;font-size:0.85em;">AI $${row.ai_price_low}–$${row.ai_price_high}</span>`;
+    }
+    return `<span style="color:#aaa;font-size:0.85em;">Set price</span>`;
   }
 
   function tip(e, cell) {
@@ -783,13 +836,29 @@
 
   // ── Side edit panel ───────────────────────────────────────────────────────
 
+  const FLAGS = {{ flags|tojson }};
   const EDITABLE_FIELDS = [
     'display_title', 'set_name', 'card_number', 'rarity', 'condition',
     'publisher_brand', 'year',
     'bullet_1', 'bullet_2', 'bullet_3',
     'final_price', 'base_price', 'price_source',
+    // Generalist fields — only surfaced when ENABLE_GENERALIST_MODE=true,
+    // otherwise they stay null for card rows and aren't shown in the UI.
+    'category', 'era', 'maker', 'material', 'dimensions',
   ];
-  const READONLY_FIELDS = ['ai_notes', 'search_query', 'inventory_number', 'status', 'barcode'];
+  const READONLY_FIELDS = ['ai_notes', 'search_query', 'inventory_number', 'status', 'barcode', 'upc'];
+
+  function applyCategoryVisibility(category) {
+    // Show card identity vs. generalist identity fields based on the loaded card's
+    // category. When generalist mode is off, we always show the card block.
+    const isCard = !FLAGS.generalist_mode || !category || category === 'card';
+    document.querySelectorAll('.card-only').forEach(el => {
+      el.style.display = isCard ? '' : 'none';
+    });
+    document.querySelectorAll('.noncard-only').forEach(el => {
+      el.style.display = isCard ? 'none' : '';
+    });
+  }
 
   function openPanel(data) {
     _currentCardId = data.id;
@@ -799,6 +868,12 @@
       const el = document.getElementById(`pf-${f}`);
       if (el) el.value = (data[f] ?? '');
     });
+
+    // Mirror condition into the noncard-only dropdown so both stay in sync
+    const condNc = document.getElementById('pf-condition-nc');
+    if (condNc) condNc.value = data.condition ?? 'Good/VG';
+
+    applyCategoryVisibility(data.category);
 
     // Live char count on title
     const titleEl = document.getElementById('pf-display_title');
@@ -863,6 +938,11 @@
         fields[f] = el.value;
       }
     });
+    // For non-card items the visible condition dropdown is the noncard one —
+    // override if it's currently displayed.
+    const condNc = document.getElementById('pf-condition-nc');
+    const noncardShown = condNc && condNc.offsetParent !== null;
+    if (noncardShown) fields.condition = condNc.value;
     // Keep card_name in sync with display_title
     if (fields.display_title) fields.card_name = fields.display_title;
 

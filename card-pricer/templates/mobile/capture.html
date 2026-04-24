@@ -206,7 +206,7 @@
 
   <div class="header">
     <h1>Card Pricer</h1>
-    <div class="sub">Scan &amp; Price Trading Cards</div>
+    <div class="sub">Scan &amp; Price Items</div>
   </div>
 
   <!-- Batch bar -->
@@ -228,15 +228,32 @@
   {% if not open_batch %}
   <div class="no-batch" id="no-batch-panel">
     <h2>Start a Batch to Begin</h2>
-    <p>A batch groups the cards you photograph together so you can review and upload them all at once.</p>
-    <textarea id="batch-notes" placeholder="Optional: describe these cards to help the AI (e.g. 'Pokemon fan art cards', 'MTG Spider-Man crossover set', 'Sports cards from 2021 Topps')" style="width:100%;margin-bottom:1em;padding:0.65em;border:1px solid #ccc;border-radius:8px;font-size:0.88em;font-family:inherit;resize:none;height:72px;"></textarea>
+    <p>A batch groups the items you photograph together so you can review and upload them all at once.</p>
+    {% if flags.generalist_mode and flags.category_picker %}
+    <select id="batch-category" style="width:100%;margin-bottom:0.6em;padding:0.65em;border:1px solid #ccc;border-radius:8px;font-size:0.9em;background:white;">
+      {% for c in flags.known_categories %}
+        <option value="{{ c }}" {% if c == flags.default_category %}selected{% endif %}>{{ c|capitalize }}</option>
+      {% endfor %}
+    </select>
+    {% endif %}
+    <textarea id="batch-notes" placeholder="Optional: describe these items to help the AI (e.g. 'Pokemon fan art cards', 'Mid-century pottery from an estate', '1970s comics')" style="width:100%;margin-bottom:1em;padding:0.65em;border:1px solid #ccc;border-radius:8px;font-size:0.88em;font-family:inherit;resize:none;height:72px;"></textarea>
     <button class="btn-start" onclick="startBatch()">Start New Batch</button>
   </div>
   {% endif %}
 
   <!-- Upload area (only shown when batch is active) -->
   <div class="upload-section" id="upload-section" {% if not open_batch %}style="display:none"{% endif %}>
-    <h2>Add Card to Batch</h2>
+    <h2>Add Item to Batch</h2>
+
+    {% if flags.generalist_mode and flags.category_picker %}
+    <label style="display:block;font-size:0.82em;color:#666;margin-bottom:0.3em;">Category for this item</label>
+    <select id="item-category" style="width:100%;margin-bottom:0.9em;padding:0.55em;border:1px solid #ccc;border-radius:8px;font-size:0.9em;background:white;">
+      {% set batch_cat = (open_batch.category if open_batch else None) or flags.default_category %}
+      {% for c in flags.known_categories %}
+        <option value="{{ c }}" {% if c == batch_cat %}selected{% endif %}>{{ c|capitalize }}</option>
+      {% endfor %}
+    </select>
+    {% endif %}
 
     <label class="camera-btn" for="file-input">
       <div class="icon">📷</div>
@@ -248,11 +265,34 @@
 
     <div id="preview-wrap" style="display:flex;"></div>
 
-    <button id="submit-btn" onclick="submitCard()">Price This Card</button>
+    {% if flags.upc_slot or flags.makers_mark_slot %}
+    <div style="display:flex;gap:0.5em;margin-bottom:0.9em;">
+      {% if flags.upc_slot %}
+      <label for="upc-input" style="flex:1;border:1.5px dashed #d1d5db;border-radius:8px;padding:0.55em 0.4em;text-align:center;cursor:pointer;color:#6b7280;font-size:0.8em;line-height:1.4;">
+        <div style="font-size:1.1em;">🔢</div>
+        <div style="font-weight:600;">UPC / Barcode</div>
+        <div id="upc-name" style="font-size:0.78em;color:#2e7d32;margin-top:0.15em;min-height:0.9em;"></div>
+      </label>
+      <input type="file" id="upc-input" accept="image/*" capture="environment" style="display:none;"
+             onchange="document.getElementById('upc-name').textContent = this.files[0]?.name || ''" />
+      {% endif %}
+      {% if flags.makers_mark_slot %}
+      <label for="mark-input" style="flex:1;border:1.5px dashed #d1d5db;border-radius:8px;padding:0.55em 0.4em;text-align:center;cursor:pointer;color:#6b7280;font-size:0.8em;line-height:1.4;">
+        <div style="font-size:1.1em;">🔍</div>
+        <div style="font-weight:600;">Maker's Mark</div>
+        <div id="mark-name" style="font-size:0.78em;color:#2e7d32;margin-top:0.15em;min-height:0.9em;"></div>
+      </label>
+      <input type="file" id="mark-input" accept="image/*" capture="environment" style="display:none;"
+             onchange="document.getElementById('mark-name').textContent = this.files[0]?.name || ''" />
+      {% endif %}
+    </div>
+    {% endif %}
+
+    <button id="submit-btn" onclick="submitCard()">Price This Item</button>
     <div id="status"></div>
     <!-- Shown after a successful scan: quick-copy for identical cards -->
     <div id="copy-section" style="display:none;margin-top:1em;padding-top:1em;border-top:1px solid #eee;text-align:center;">
-      <p style="font-size:0.82em;color:#666;margin-bottom:0.6em;">Have another copy of the same card?</p>
+      <p style="font-size:0.82em;color:#666;margin-bottom:0.6em;">Have another copy of the same item?</p>
       <button onclick="copyLastCard()" style="background:#f0f9ff;border:1px solid #7dd3fc;color:#0369a1;border-radius:8px;padding:0.5em 1.2em;font-size:0.92em;cursor:pointer;font-weight:600;">
         + Add Identical Copy
       </button>
@@ -268,6 +308,8 @@
 
 <script>
   const BATCH_ID = {{ open_batch.id if open_batch else 'null' }};
+  const FLAGS = {{ flags|tojson }};
+  const PHOTO_CAP = FLAGS.extra_photos ? FLAGS.extra_photo_limit : 3;
   let selectedFiles = [];
   let lastCardId = null;
 
@@ -275,10 +317,11 @@
 
   async function startBatch() {
     const notes = (document.getElementById('batch-notes')?.value || '').trim();
+    const category = (document.getElementById('batch-category')?.value || '').trim() || null;
     const r = await fetch('/api/batch/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ notes }),
+      body: JSON.stringify({ notes, category }),
     });
     if (r.ok) window.location.reload();
   }
@@ -295,6 +338,10 @@
     // Accumulate — don't replace. iOS resets the input between camera opens.
     const incoming = Array.from(input.files);
     selectedFiles = [...selectedFiles, ...incoming];
+    if (selectedFiles.length > PHOTO_CAP) {
+      selectedFiles = selectedFiles.slice(0, PHOTO_CAP);
+      alert(`Maximum ${PHOTO_CAP} photos per item.`);
+    }
     // Reset the input so the same file can be selected again if needed,
     // and so the change event fires reliably on the next tap.
     input.value = '';
@@ -344,18 +391,37 @@
     const status = document.getElementById('status');
     btn.disabled = true;
     btn.textContent = 'Processing…';
-    status.textContent = 'Identifying and pricing card…';
+    status.textContent = 'Identifying and pricing item…';
     status.className = 'status-processing';
 
     const form = new FormData();
     selectedFiles.forEach(f => form.append('files', f));
+    const itemCat = document.getElementById('item-category')?.value;
+    if (itemCat) form.append('category', itemCat);
+    const markInput = document.getElementById('mark-input');
+    if (markInput && markInput.files && markInput.files[0]) {
+      form.append('makers_mark', markInput.files[0]);
+    }
+    const upcInput = document.getElementById('upc-input');
+    if (upcInput && upcInput.files && upcInput.files[0]) {
+      form.append('upc_image', upcInput.files[0]);
+    }
 
     try {
       const r = await fetch('/api/ingest', { method: 'POST', body: form });
       const data = await r.json();
 
       if (r.ok && data.ok) {
-        status.textContent = `✓ ${data.title} → $${data.price}`;
+        const priceStr = data.price != null
+          ? `$${parseFloat(data.price).toFixed(2)}`
+          : 'Set price on desktop';
+        const rangeStr = (data.ai_price_low != null && data.ai_price_high != null)
+          ? `<div style="font-size:0.8em;font-weight:400;color:#555;margin-top:0.2em;">AI range: $${data.ai_price_low}–$${data.ai_price_high} (${data.ai_price_confidence || ''} confidence)</div>`
+          : '';
+        const upcStr = data.upc
+          ? `<div style="font-size:0.78em;color:#888;margin-top:0.15em;">UPC: ${data.upc}</div>`
+          : '';
+        status.innerHTML = `✓ ${data.title} → ${priceStr}${rangeStr}${upcStr}`;
         status.className = 'status-ok';
         lastCardId = data.card_id;
         // Show copy shortcut
@@ -364,6 +430,8 @@
         // Reset for next card
         selectedFiles = [];
         document.getElementById('file-input').value = '';
+        if (markInput) markInput.value = '';
+        if (upcInput) upcInput.value = '';
         document.getElementById('preview-wrap').style.display = 'none';
         document.getElementById('preview-wrap').innerHTML = '';
         btn.style.display = 'none';
@@ -377,7 +445,7 @@
       status.className = 'status-err';
     } finally {
       btn.disabled = false;
-      btn.textContent = 'Price This Card';
+      btn.textContent = 'Price This Item';
     }
   }
 
@@ -388,31 +456,46 @@
     const r = await fetch(`/api/cards?batch_id=${BATCH_ID}`);
     const cards = await r.json();
 
-    document.getElementById('card-count').textContent = `${cards.length} cards`;
+    document.getElementById('card-count').textContent = `${cards.length} items`;
 
     const wrap = document.getElementById('recent-cards');
     if (!cards.length) {
-      wrap.innerHTML = '<p style="color:#aaa;font-size:0.85em;text-align:center;">No cards yet — take your first photo above</p>';
+      wrap.innerHTML = '<p style="color:#aaa;font-size:0.85em;text-align:center;">No items yet — take your first photo above</p>';
       return;
     }
 
     // Show newest first
-    wrap.innerHTML = [...cards].reverse().map(c => `
-      <div class="card-item">
-        <div style="flex:1;min-width:0;">
-          <div class="card-title">${c.display_title || c.card_name || '—'}</div>
-          <div class="card-meta">#${c.sequence_num} · Inv ${c.inventory_number} · ${c.status}</div>
+    wrap.innerHTML = [...cards].reverse().map(c => {
+      const priceStr = c.final_price != null
+        ? `$${parseFloat(c.final_price).toFixed(2)}`
+        : (c.ai_price_low != null ? `AI $${c.ai_price_low}–$${c.ai_price_high}` : 'Set price');
+      const rangeStr = (c.ai_price_low != null && c.ai_price_high != null)
+        ? `<span style="font-size:0.75em;color:#888;font-weight:400;margin-left:0.5em;">range $${c.ai_price_low}–$${c.ai_price_high}</span>`
+        : '';
+      return `
+      <div class="card-item" style="flex-direction:column;align-items:stretch;">
+        <div style="display:flex;align-items:center;">
+          <div style="flex:1;min-width:0;">
+            <div class="card-title">${c.display_title || c.card_name || '—'}</div>
+            <div class="card-meta">#${c.sequence_num} · Inv ${c.inventory_number} · ${c.status}</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:0.4em;flex-shrink:0;margin-left:0.5em;">
+            <button onclick="openEditModal(${c.id})"
+                    style="background:#fffbea;border:1px solid #fbd38d;color:#975a16;border-radius:6px;padding:0.25em 0.5em;font-size:0.8em;cursor:pointer;white-space:nowrap;">
+              Edit
+            </button>
+            <button onclick="copyCard(${c.id})"
+                    title="Add identical copy"
+                    style="background:#f0f9ff;border:1px solid #7dd3fc;color:#0369a1;border-radius:6px;padding:0.25em 0.5em;font-size:0.8em;cursor:pointer;white-space:nowrap;">
+              + Copy
+            </button>
+          </div>
         </div>
-        <div style="display:flex;align-items:center;gap:0.5em;flex-shrink:0;">
-          <div class="card-price">$${(c.final_price || 0).toFixed(2)}</div>
-          <button onclick="copyCard(${c.id})"
-                  title="Add identical copy"
-                  style="background:#f0f9ff;border:1px solid #7dd3fc;color:#0369a1;border-radius:6px;padding:0.25em 0.5em;font-size:0.8em;cursor:pointer;white-space:nowrap;">
-            + Copy
-          </button>
+        <div style="margin-top:0.25em;">
+          <span class="card-price">${priceStr}</span>${rangeStr}
         </div>
-      </div>
-    `).join('');
+      </div>`;
+    }).join('');
   }
 
   // ── Duplicate card ─────────────────────────────────────────────────────────
@@ -444,8 +527,179 @@
     btn.disabled = false;
   }
 
+  // ── Edit modal ────────────────────────────────────────────────────────────
+
+  let _editCardId = null;
+
+  async function openEditModal(cardId) {
+    _editCardId = cardId;
+    const r = await fetch(`/api/cards/${cardId}`);
+    const c = await r.json();
+
+    document.getElementById('ef-display_title').value = c.display_title || '';
+    document.getElementById('ef-final_price').value   = c.final_price != null ? c.final_price : '';
+    document.getElementById('ef-bullet_1').value      = c.bullet_1 || '';
+    document.getElementById('ef-bullet_2').value      = c.bullet_2 || '';
+    document.getElementById('ef-bullet_3').value      = c.bullet_3 || '';
+    document.getElementById('ef-condition').value     = c.condition || 'Good/VG';
+    document.getElementById('ef-era').value           = c.era || '';
+    document.getElementById('ef-maker').value         = c.maker || '';
+    document.getElementById('ef-material').value      = c.material || '';
+
+    const hint = document.getElementById('ef-range-hint');
+    hint.textContent = (c.ai_price_low != null && c.ai_price_high != null)
+      ? `AI range: $${c.ai_price_low}–$${c.ai_price_high} (${c.ai_price_confidence || ''} confidence)`
+      : '';
+
+    const isCard = !c.category || c.category === 'card';
+    document.getElementById('ef-noncard-fields').style.display = isCard ? 'none' : '';
+
+    document.getElementById('ef-status').textContent = '';
+    document.getElementById('edit-modal').style.display = 'block';
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeEditModal(event) {
+    if (event && event.target !== document.getElementById('edit-modal')) return;
+    document.getElementById('edit-modal').style.display = 'none';
+    document.body.style.overflow = '';
+  }
+
+  function closeEditModalDirect() {
+    document.getElementById('edit-modal').style.display = 'none';
+    document.body.style.overflow = '';
+  }
+
+  async function saveEdit() {
+    const btn = document.getElementById('ef-save-btn');
+    const statusEl = document.getElementById('ef-status');
+    btn.disabled = true; btn.textContent = 'Saving…';
+
+    const priceVal = document.getElementById('ef-final_price').value;
+    const fields = {
+      display_title: document.getElementById('ef-display_title').value,
+      card_name:     document.getElementById('ef-display_title').value,
+      final_price:   priceVal !== '' ? parseFloat(priceVal) : null,
+      bullet_1:      document.getElementById('ef-bullet_1').value,
+      bullet_2:      document.getElementById('ef-bullet_2').value,
+      bullet_3:      document.getElementById('ef-bullet_3').value,
+      condition:     document.getElementById('ef-condition').value,
+      era:           document.getElementById('ef-era').value,
+      maker:         document.getElementById('ef-maker').value,
+      material:      document.getElementById('ef-material').value,
+    };
+
+    try {
+      const r = await fetch(`/api/cards/${_editCardId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fields }),
+      });
+      if (!r.ok) throw new Error('Save failed');
+      statusEl.textContent = '✓ Saved';
+      statusEl.style.color = '#2e7d32';
+      setTimeout(() => {
+        closeEditModalDirect();
+        loadRecentCards();
+      }, 700);
+    } catch(e) {
+      statusEl.textContent = `Error: ${e.message}`;
+      statusEl.style.color = '#c62828';
+    } finally {
+      btn.disabled = false; btn.textContent = 'Save Changes';
+    }
+  }
+
+  async function deleteItem() {
+    if (!confirm('Delete this item? This cannot be undone.')) return;
+    try {
+      const r = await fetch('/api/cards/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: [_editCardId] }),
+      });
+      if (!r.ok) throw new Error('Delete failed');
+      closeEditModalDirect();
+      loadRecentCards();
+    } catch(e) {
+      document.getElementById('ef-status').textContent = `Error: ${e.message}`;
+      document.getElementById('ef-status').style.color = '#c62828';
+    }
+  }
+
   // Init
   if (BATCH_ID) loadRecentCards();
 </script>
+
+<!-- Edit bottom-sheet modal -->
+<div id="edit-modal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.5);" onclick="closeEditModal(event)">
+  <div id="edit-sheet" style="position:absolute;bottom:0;left:0;right:0;background:white;border-radius:16px 16px 0 0;padding:1.5em 1.2em 2em;max-height:85vh;overflow-y:auto;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.2em;">
+      <h2 style="font-size:1em;font-weight:700;color:#333;margin:0;">Edit Item</h2>
+      <button onclick="closeEditModalDirect()" style="background:none;border:none;font-size:1.3em;color:#888;cursor:pointer;padding:0;">✕</button>
+    </div>
+
+    <div style="margin-bottom:0.8em;">
+      <label style="font-size:0.8em;font-weight:600;color:#555;display:block;margin-bottom:0.2em;">Display Title</label>
+      <input type="text" id="ef-display_title" style="width:100%;box-sizing:border-box;border:1px solid #ddd;border-radius:6px;padding:0.5em;font-size:0.95em;">
+    </div>
+    <div style="margin-bottom:0.3em;">
+      <label style="font-size:0.8em;font-weight:600;color:#555;display:block;margin-bottom:0.2em;">Price ($)</label>
+      <input type="text" inputmode="decimal" id="ef-final_price"
+             onfocus="this.select()"
+             style="width:100%;box-sizing:border-box;border:1px solid #ddd;border-radius:6px;padding:0.5em;font-size:1.1em;font-weight:700;">
+    </div>
+    <div id="ef-range-hint" style="font-size:0.78em;color:#888;margin-bottom:0.8em;min-height:1em;"></div>
+    <div style="margin-bottom:0.8em;">
+      <label style="font-size:0.8em;font-weight:600;color:#555;display:block;margin-bottom:0.2em;">Bullet 1</label>
+      <textarea id="ef-bullet_1" rows="2" style="width:100%;box-sizing:border-box;border:1px solid #ddd;border-radius:6px;padding:0.5em;font-size:0.9em;resize:vertical;"></textarea>
+    </div>
+    <div style="margin-bottom:0.8em;">
+      <label style="font-size:0.8em;font-weight:600;color:#555;display:block;margin-bottom:0.2em;">Bullet 2</label>
+      <textarea id="ef-bullet_2" rows="2" style="width:100%;box-sizing:border-box;border:1px solid #ddd;border-radius:6px;padding:0.5em;font-size:0.9em;resize:vertical;"></textarea>
+    </div>
+    <div style="margin-bottom:0.8em;">
+      <label style="font-size:0.8em;font-weight:600;color:#555;display:block;margin-bottom:0.2em;">Bullet 3</label>
+      <textarea id="ef-bullet_3" rows="2" style="width:100%;box-sizing:border-box;border:1px solid #ddd;border-radius:6px;padding:0.5em;font-size:0.9em;resize:vertical;"></textarea>
+    </div>
+    <div style="margin-bottom:0.8em;">
+      <label style="font-size:0.8em;font-weight:600;color:#555;display:block;margin-bottom:0.2em;">Condition</label>
+      <select id="ef-condition" style="width:100%;box-sizing:border-box;border:1px solid #ddd;border-radius:6px;padding:0.5em;font-size:0.9em;">
+        <option>Mint/NM</option>
+        <option>Good/VG</option>
+        <option>Fair/GD</option>
+        <option>Poor</option>
+      </select>
+    </div>
+
+    <div id="ef-noncard-fields">
+      <div style="margin-bottom:0.8em;">
+        <label style="font-size:0.8em;font-weight:600;color:#555;display:block;margin-bottom:0.2em;">Era</label>
+        <input type="text" id="ef-era" style="width:100%;box-sizing:border-box;border:1px solid #ddd;border-radius:6px;padding:0.5em;font-size:0.9em;">
+      </div>
+      <div style="margin-bottom:0.8em;">
+        <label style="font-size:0.8em;font-weight:600;color:#555;display:block;margin-bottom:0.2em;">Maker / Brand</label>
+        <input type="text" id="ef-maker" style="width:100%;box-sizing:border-box;border:1px solid #ddd;border-radius:6px;padding:0.5em;font-size:0.9em;">
+      </div>
+      <div style="margin-bottom:0.8em;">
+        <label style="font-size:0.8em;font-weight:600;color:#555;display:block;margin-bottom:0.2em;">Material</label>
+        <input type="text" id="ef-material" style="width:100%;box-sizing:border-box;border:1px solid #ddd;border-radius:6px;padding:0.5em;font-size:0.9em;">
+      </div>
+    </div>
+
+    <div id="ef-status" style="min-height:1.2em;font-size:0.85em;text-align:center;margin-bottom:0.5em;"></div>
+    <button onclick="saveEdit()" id="ef-save-btn"
+            style="width:100%;background:#2e7d32;color:white;border:none;border-radius:10px;padding:0.9em;font-size:1em;font-weight:700;cursor:pointer;">
+      Save Changes
+    </button>
+    <div style="margin-top:2em;padding-top:1em;border-top:1px solid #f0f0f0;text-align:center;">
+      <button onclick="deleteItem()"
+              style="background:none;border:none;color:#c62828;font-size:0.85em;cursor:pointer;padding:0.4em 0.8em;text-decoration:underline;">
+        Delete this item
+      </button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>

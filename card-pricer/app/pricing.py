@@ -188,9 +188,10 @@ _BANNED_KEYWORDS = {"cgc", "pgx", "cbcs", "slab", "graded", "autograph",
                     "signed", "signature", "lot", "set of", "bundle", "collection"}
 
 
-async def fetch_ebay(query: str) -> Optional[float]:
+async def fetch_ebay(query: str, upc: Optional[str] = None) -> Optional[float]:
     """
-    Query eBay Browse API for active fixed-price card listings.
+    Query eBay Browse API for active fixed-price listings.
+    If upc is provided, uses GTIN filter for precise matching instead of text search.
     Returns median price from filtered results, or None.
     """
     if os.getenv("ENABLE_EBAY_TOOL", "true").lower() != "true":
@@ -201,14 +202,22 @@ async def fetch_ebay(query: str) -> Optional[float]:
     if not token:
         return None
 
-    search_query = f"{query} trading card"
-
-    params = {
-        "q": search_query,
-        "limit": "40",
-        "filter": "buyingOptions:FIXED_PRICE",
-        "category_ids": "183454",  # Trading Cards category
-    }
+    if upc:
+        search_query = upc
+        params = {
+            "q": upc,
+            "limit": "40",
+            "filter": f"buyingOptions:FIXED_PRICE,gtin:{upc}",
+        }
+        logger.info(f"[eBay] UPC lookup: {upc}")
+    else:
+        search_query = f"{query} trading card"
+        params = {
+            "q": search_query,
+            "limit": "40",
+            "filter": "buyingOptions:FIXED_PRICE",
+            "category_ids": "183454",  # Trading Cards category
+        }
     headers = {
         "Authorization": f"Bearer {token}",
         "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
@@ -263,11 +272,20 @@ async def fetch_ebay(query: str) -> Optional[float]:
 # Combined fetch (run both concurrently)
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def fetch_market_prices(search_query: str) -> tuple[Optional[float], Optional[float]]:
+async def fetch_market_prices(
+    search_query: str, upc: Optional[str] = None
+) -> tuple[Optional[float], Optional[float]]:
     """
     Run PriceCharting and eBay concurrently.
+    If upc is provided, eBay uses GTIN filter (much more accurate) and PriceCharting
+    is skipped (it's card-specific and won't match general retail items).
     Returns (pricecharting_median, ebay_median). Either may be None.
     """
+    if upc:
+        ebay_median = await fetch_ebay(search_query, upc=upc)
+        logger.info(f"[pricing] UPC mode — eBay: {ebay_median} (PriceCharting skipped)")
+        return None, ebay_median
+
     pc_task = fetch_pricecharting(search_query)
     ebay_task = fetch_ebay(search_query)
 
