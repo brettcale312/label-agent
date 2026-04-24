@@ -5,9 +5,11 @@ SQLite database layer for card-pricer.
 Uses Python's built-in sqlite3 — no ORM needed at this scale.
 
 Schema:
-  batches  — groups of cards photographed together
-  cards    — individual cards with status lifecycle:
-             pending → approved → uploaded → printed
+  accounts — tenants. Own Sandpiper credentials and a data pool.
+  users    — individuals belonging to one account.
+  invites  — pending team invitations.
+  batches  — groups of cards photographed together (scoped by account_id).
+  cards    — individual items in a batch (status: pending → approved → uploaded → printed).
 """
 
 import sqlite3
@@ -38,6 +40,41 @@ def get_conn() -> sqlite3.Connection:
 def init_db():
     with get_conn() as conn:
         conn.executescript("""
+            CREATE TABLE IF NOT EXISTS accounts (
+                id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+                name                     TEXT NOT NULL,
+                sandpiper_username       TEXT,
+                sandpiper_password       TEXT,
+                sandpiper_account_id     TEXT,
+                sandpiper_booth          TEXT,
+                created_at               TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS users (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id      INTEGER NOT NULL REFERENCES accounts(id),
+                email           TEXT NOT NULL UNIQUE,
+                password_hash   TEXT NOT NULL,
+                display_name    TEXT NOT NULL,
+                role            TEXT NOT NULL DEFAULT 'member',
+                created_at      TEXT NOT NULL,
+                last_login_at   TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS invites (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id   INTEGER NOT NULL REFERENCES accounts(id),
+                email        TEXT NOT NULL,
+                token        TEXT NOT NULL UNIQUE,
+                invited_by   INTEGER NOT NULL REFERENCES users(id),
+                expires_at   TEXT NOT NULL,
+                accepted_at  TEXT,
+                created_at   TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_users_account ON users(account_id);
+            CREATE INDEX IF NOT EXISTS idx_invites_token ON invites(token);
+
             CREATE TABLE IF NOT EXISTS batches (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 name        TEXT NOT NULL,
@@ -111,6 +148,10 @@ def init_db():
             "ALTER TABLE cards   ADD COLUMN makers_mark_image_path TEXT",
             "ALTER TABLE cards   ADD COLUMN price_user_confirmed INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE cards   ADD COLUMN upc TEXT",
+            # Multi-tenancy: scope batches to an account and track who created them.
+            # Existing rows get NULL — backfilled by seed_default_account() on first boot.
+            "ALTER TABLE batches ADD COLUMN account_id INTEGER REFERENCES accounts(id)",
+            "ALTER TABLE batches ADD COLUMN created_by_user_id INTEGER REFERENCES users(id)",
         ]
         for stmt in _live_migrations:
             try:
@@ -123,13 +164,19 @@ def init_db():
 # Batch operations
 # ─────────────────────────────────────────────────────────────────────────────
 
-def create_batch(name: str, notes: str = "", category: Optional[str] = None) -> int:
+def create_batch(
+    name: str,
+    notes: str = "",
+    category: Optional[str] = None,
+    account_id: Optional[int] = None,
+    created_by_user_id: Optional[int] = None,
+) -> int:
     """Create a new open batch. Returns new batch id."""
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO batches (name, notes, status, created_at, category) "
-            "VALUES (?, ?, 'open', ?, ?)",
-            (name, notes or "", _now(), category),
+            "INSERT INTO batches (name, notes, status, created_at, category, account_id, created_by_user_id) "
+            "VALUES (?, ?, 'open', ?, ?, ?, ?)",
+            (name, notes or "", _now(), category, account_id, created_by_user_id),
         )
         return cur.lastrowid
 
@@ -143,15 +190,34 @@ def close_batch(batch_id: int):
         )
 
 
-def get_batch(batch_id: int) -> Optional[dict]:
+def get_batch(batch_id: int, account_id: Optional[int] = None) -> Optional[dict]:
+    """Fetch a batch. If account_id is provided, returns None when the batch belongs
+    to a different account — making cross-tenant ID guessing impossible by construction."""
     with get_conn() as conn:
-        row = conn.execute("SELECT * FROM batches WHERE id=?", (batch_id,)).fetchone()
+        if account_id is not None:
+            row = conn.execute(
+                "SELECT * FROM batches WHERE id=? AND account_id=?",
+                (batch_id, account_id),
+            ).fetchone()
+        else:
+            row = conn.execute("SELECT * FROM batches WHERE id=?", (batch_id,)).fetchone()
         return dict(row) if row else None
 
 
-def list_batches(include_archived: bool = False) -> list[dict]:
-    """All batches, newest first, with card counts. Archived excluded by default."""
-    where = "" if include_archived else "WHERE b.status != 'archived'"
+def list_batches(
+    include_archived: bool = False,
+    account_id: Optional[int] = None,
+) -> list[dict]:
+    """All batches for an account (or all batches when account_id is None — admin only),
+    newest first, with card counts. Archived excluded by default."""
+    clauses = []
+    params: list = []
+    if not include_archived:
+        clauses.append("b.status != 'archived'")
+    if account_id is not None:
+        clauses.append("b.account_id = ?")
+        params.append(account_id)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     with get_conn() as conn:
         rows = conn.execute(f"""
             SELECT b.*,
@@ -165,47 +231,79 @@ def list_batches(include_archived: bool = False) -> list[dict]:
             {where}
             GROUP BY b.id
             ORDER BY b.id DESC
-        """).fetchall()
+        """, params).fetchall()
         return [dict(r) for r in rows]
 
 
-def archive_batch(batch_id: int):
+def archive_batch(batch_id: int, account_id: Optional[int] = None):
     """
     Archive a batch and mark all its cards as 'archived'.
     Archived cards are hidden from all default grid views but stay in the DB.
     """
     with get_conn() as conn:
-        conn.execute(
-            "UPDATE batches SET status='archived', closed_at=? WHERE id=?",
-            (_now(), batch_id),
-        )
-        conn.execute(
-            "UPDATE cards SET status='archived' WHERE batch_id=?",
-            (batch_id,),
-        )
+        if account_id is not None:
+            conn.execute(
+                "UPDATE batches SET status='archived', closed_at=? WHERE id=? AND account_id=?",
+                (_now(), batch_id, account_id),
+            )
+            conn.execute(
+                "UPDATE cards SET status='archived' WHERE batch_id=? AND batch_id IN "
+                "(SELECT id FROM batches WHERE account_id=?)",
+                (batch_id, account_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE batches SET status='archived', closed_at=? WHERE id=?",
+                (_now(), batch_id),
+            )
+            conn.execute(
+                "UPDATE cards SET status='archived' WHERE batch_id=?",
+                (batch_id,),
+            )
 
 
-def unarchive_batch(batch_id: int):
+def unarchive_batch(batch_id: int, account_id: Optional[int] = None):
     """
-    Restore an archived batch to 'closed' and set its cards back to 'printed'
-    (the last real status before archiving — they already have barcodes).
+    Restore an archived batch to 'closed' and set its cards back to 'printed'.
     """
     with get_conn() as conn:
-        conn.execute(
-            "UPDATE batches SET status='closed', closed_at=NULL WHERE id=?",
-            (batch_id,),
-        )
-        conn.execute(
-            "UPDATE cards SET status='printed' WHERE batch_id=? AND status='archived'",
-            (batch_id,),
-        )
+        if account_id is not None:
+            conn.execute(
+                "UPDATE batches SET status='closed', closed_at=NULL WHERE id=? AND account_id=?",
+                (batch_id, account_id),
+            )
+            conn.execute(
+                "UPDATE cards SET status='printed' WHERE batch_id=? AND status='archived' "
+                "AND batch_id IN (SELECT id FROM batches WHERE account_id=?)",
+                (batch_id, account_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE batches SET status='closed', closed_at=NULL WHERE id=?",
+                (batch_id,),
+            )
+            conn.execute(
+                "UPDATE cards SET status='printed' WHERE batch_id=? AND status='archived'",
+                (batch_id,),
+            )
 
 
-def delete_batch(batch_id: int):
+def delete_batch(batch_id: int, account_id: Optional[int] = None):
     """Hard-delete a batch and all its cards."""
     with get_conn() as conn:
-        conn.execute("DELETE FROM cards WHERE batch_id=?", (batch_id,))
-        conn.execute("DELETE FROM batches WHERE id=?", (batch_id,))
+        if account_id is not None:
+            conn.execute(
+                "DELETE FROM cards WHERE batch_id=? AND batch_id IN "
+                "(SELECT id FROM batches WHERE account_id=?)",
+                (batch_id, account_id),
+            )
+            conn.execute(
+                "DELETE FROM batches WHERE id=? AND account_id=?",
+                (batch_id, account_id),
+            )
+        else:
+            conn.execute("DELETE FROM cards WHERE batch_id=?", (batch_id,))
+            conn.execute("DELETE FROM batches WHERE id=?", (batch_id,))
 
 
 def prune_empty_batches():
@@ -218,12 +316,19 @@ def prune_empty_batches():
         """)
 
 
-def get_open_batch() -> Optional[dict]:
-    """Return the currently open batch, if any."""
+def get_open_batch(account_id: Optional[int] = None) -> Optional[dict]:
+    """Return the currently open batch for an account, if any."""
     with get_conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM batches WHERE status='open' ORDER BY id DESC LIMIT 1"
-        ).fetchone()
+        if account_id is not None:
+            row = conn.execute(
+                "SELECT * FROM batches WHERE status='open' AND account_id=? "
+                "ORDER BY id DESC LIMIT 1",
+                (account_id,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM batches WHERE status='open' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
         return dict(row) if row else None
 
 
@@ -309,9 +414,19 @@ def insert_card(batch_id: int, data: dict) -> int:
         return cur.lastrowid
 
 
-def get_card(card_id: int) -> Optional[dict]:
+def get_card(card_id: int, account_id: Optional[int] = None) -> Optional[dict]:
+    """Fetch a card. If account_id is provided, returns None when the card's batch
+    belongs to a different account — cross-tenant access blocked at the query level."""
     with get_conn() as conn:
-        row = conn.execute("SELECT * FROM cards WHERE id=?", (card_id,)).fetchone()
+        if account_id is not None:
+            row = conn.execute(
+                "SELECT c.* FROM cards c "
+                "JOIN batches b ON c.batch_id = b.id "
+                "WHERE c.id=? AND b.account_id=?",
+                (card_id, account_id),
+            ).fetchone()
+        else:
+            row = conn.execute("SELECT * FROM cards WHERE id=?", (card_id,)).fetchone()
         return dict(row) if row else None
 
 
@@ -319,35 +434,44 @@ def list_cards(
     batch_id: Optional[int] = None,
     status: Optional[str] = None,
     exclude_archived: bool = False,
+    account_id: Optional[int] = None,
 ) -> list[dict]:
     """
-    List cards, always in sequence order.
+    List cards, always in sequence order. When account_id is provided, results are
+    scoped to that account via a JOIN on batches.
     - exclude_archived=True  → never show archived, regardless of other filters
     - status='archived'      → show only archived cards
     - no status, no exclude  → hide archived by default (global view)
     - batch_id only          → all cards for that batch including archived
     """
-    sql = "SELECT * FROM cards WHERE 1=1"
-    params = []
+    sql = "SELECT c.* FROM cards c"
+    if account_id is not None:
+        sql += " JOIN batches b ON c.batch_id = b.id"
+    sql += " WHERE 1=1"
+    params: list = []
+    if account_id is not None:
+        sql += " AND b.account_id = ?"
+        params.append(account_id)
     if batch_id is not None:
-        sql += " AND batch_id=?"
+        sql += " AND c.batch_id=?"
         params.append(batch_id)
     if status:
-        sql += " AND status=?"
+        sql += " AND c.status=?"
         params.append(status)
     elif exclude_archived or batch_id is None:
         # Hide archived: explicitly requested, or default global view
-        sql += " AND status != 'archived'"
-    sql += " ORDER BY batch_id, sequence_num"
+        sql += " AND c.status != 'archived'"
+    sql += " ORDER BY c.batch_id, c.sequence_num"
     with get_conn() as conn:
         rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
 
-def update_card(card_id: int, fields: dict):
+def update_card(card_id: int, fields: dict, account_id: Optional[int] = None):
     """
     Update arbitrary fields on a card. Only touches columns that are provided.
-    Safe — ignores unknown keys.
+    Safe — ignores unknown keys. When account_id is provided, the UPDATE is no-op
+    if the card belongs to a different account.
     """
     allowed = {
         "display_title", "card_name", "set_name", "card_number", "rarity",
@@ -366,26 +490,49 @@ def update_card(card_id: int, fields: dict):
     set_clause = ", ".join(f"{k}=?" for k in clean)
     values = list(clean.values()) + [card_id]
     with get_conn() as conn:
-        conn.execute(f"UPDATE cards SET {set_clause} WHERE id=?", values)
+        if account_id is not None:
+            values.append(account_id)
+            conn.execute(
+                f"UPDATE cards SET {set_clause} WHERE id=? AND batch_id IN "
+                f"(SELECT id FROM batches WHERE account_id=?)",
+                values,
+            )
+        else:
+            conn.execute(f"UPDATE cards SET {set_clause} WHERE id=?", values)
 
 
-def approve_cards(card_ids: list[int]):
+def approve_cards(card_ids: list[int], account_id: Optional[int] = None):
     """Mark a list of cards as approved."""
+    if not card_ids:
+        return
     with get_conn() as conn:
-        conn.executemany(
-            "UPDATE cards SET status='approved' WHERE id=? AND status='pending'",
-            [(cid,) for cid in card_ids],
-        )
+        if account_id is not None:
+            placeholders = ",".join("?" * len(card_ids))
+            params = list(card_ids) + [account_id]
+            conn.execute(
+                f"UPDATE cards SET status='approved' "
+                f"WHERE id IN ({placeholders}) AND status='pending' "
+                f"AND batch_id IN (SELECT id FROM batches WHERE account_id=?)",
+                params,
+            )
+        else:
+            conn.executemany(
+                "UPDATE cards SET status='approved' WHERE id=? AND status='pending'",
+                [(cid,) for cid in card_ids],
+            )
 
 
-def get_approved_cards(batch_id: int) -> list[dict]:
+def get_approved_cards(batch_id: int, account_id: Optional[int] = None) -> list[dict]:
     """Get approved cards for a batch, in sequence order. Used for Sandpiper upload."""
-    return list_cards(batch_id=batch_id, status="approved")
+    return list_cards(batch_id=batch_id, status="approved", account_id=account_id)
 
 
-def get_uploaded_cards(batch_id: Optional[int] = None) -> list[dict]:
+def get_uploaded_cards(
+    batch_id: Optional[int] = None,
+    account_id: Optional[int] = None,
+) -> list[dict]:
     """Get uploaded cards (have barcodes). Used for label printing."""
-    return list_cards(batch_id=batch_id, status="uploaded")
+    return list_cards(batch_id=batch_id, status="uploaded", account_id=account_id)
 
 
 def mark_uploaded(card_id: int, inventory_number: str, barcode: str):
@@ -412,15 +559,16 @@ def mark_printed(card_ids: list[int]):
         )
 
 
-def duplicate_card(card_id: int) -> Optional[int]:
+def duplicate_card(card_id: int, account_id: Optional[int] = None) -> Optional[int]:
     """
     Copy a card into the same batch with a fresh sequence number, inventory number,
     and pending status. Barcode/upload fields are cleared. Returns new card id.
+    Returns None if the card doesn't exist or belongs to a different account.
     """
-    card = get_card(card_id)
+    card = get_card(card_id, account_id=account_id)
     if not card:
         return None
-    inv = get_next_inv_number()
+    inv = get_next_inv_number(account_id=account_id)
     seq = next_sequence_num(card["batch_id"])
     with get_conn() as conn:
         cur = conn.execute("""
@@ -464,13 +612,22 @@ def duplicate_card(card_id: int) -> Optional[int]:
         return cur.lastrowid
 
 
-def delete_cards(card_ids: list[int]):
-    """Hard-delete cards by id. No status restriction — any card can be deleted."""
+def delete_cards(card_ids: list[int], account_id: Optional[int] = None):
+    """Hard-delete cards by id. When account_id is provided, only cards belonging to
+    that account are deleted; cross-tenant ids in the list are silently ignored."""
     if not card_ids:
         return
     placeholders = ",".join("?" * len(card_ids))
     with get_conn() as conn:
-        conn.execute(f"DELETE FROM cards WHERE id IN ({placeholders})", card_ids)
+        if account_id is not None:
+            params = list(card_ids) + [account_id]
+            conn.execute(
+                f"DELETE FROM cards WHERE id IN ({placeholders}) "
+                f"AND batch_id IN (SELECT id FROM batches WHERE account_id=?)",
+                params,
+            )
+        else:
+            conn.execute(f"DELETE FROM cards WHERE id IN ({placeholders})", card_ids)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -479,17 +636,24 @@ def delete_cards(card_ids: list[int]):
 
 INV_START = 10000
 
-def get_next_inv_number() -> str:
+def get_next_inv_number(account_id: Optional[int] = None) -> str:
     """
-    Generate the next sequential inventory number.
-    Starts at 10000 and increments by 1 per card.
-    Reads the current max from the DB so it's always correct even after restarts.
+    Generate the next sequential inventory number for an account (or globally if no
+    account is provided — admin/legacy use only). Starts at 10000 and increments by 1.
     """
     with get_conn() as conn:
-        row = conn.execute(
-            "SELECT MAX(CAST(inventory_number AS INTEGER)) FROM cards "
-            "WHERE inventory_number GLOB '[0-9]*'"
-        ).fetchone()
+        if account_id is not None:
+            row = conn.execute(
+                "SELECT MAX(CAST(c.inventory_number AS INTEGER)) "
+                "FROM cards c JOIN batches b ON c.batch_id = b.id "
+                "WHERE b.account_id=? AND c.inventory_number GLOB '[0-9]*'",
+                (account_id,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT MAX(CAST(inventory_number AS INTEGER)) FROM cards "
+                "WHERE inventory_number GLOB '[0-9]*'"
+            ).fetchone()
         last = row[0] if row[0] else INV_START - 1
         return str(last + 1)
 
@@ -500,3 +664,175 @@ def get_next_inv_number() -> str:
 
 def _now() -> str:
     return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Accounts
+# ─────────────────────────────────────────────────────────────────────────────
+
+def create_account(
+    name: str,
+    sandpiper_username: Optional[str] = None,
+    sandpiper_password: Optional[str] = None,
+    sandpiper_account_id: Optional[str] = None,
+    sandpiper_booth: Optional[str] = None,
+) -> int:
+    """Create a new account. Sandpiper password should already be encrypted."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO accounts (name, sandpiper_username, sandpiper_password, "
+            "sandpiper_account_id, sandpiper_booth, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (name, sandpiper_username, sandpiper_password, sandpiper_account_id,
+             sandpiper_booth, _now()),
+        )
+        return cur.lastrowid
+
+
+def get_account(account_id: int) -> Optional[dict]:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM accounts WHERE id=?", (account_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def list_accounts() -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM accounts ORDER BY id").fetchall()
+        return [dict(r) for r in rows]
+
+
+def update_account(account_id: int, fields: dict):
+    """Update account fields. Sandpiper password should be pre-encrypted by caller."""
+    allowed = {
+        "name", "sandpiper_username", "sandpiper_password",
+        "sandpiper_account_id", "sandpiper_booth",
+    }
+    clean = {k: v for k, v in fields.items() if k in allowed}
+    if not clean:
+        return
+    set_clause = ", ".join(f"{k}=?" for k in clean)
+    values = list(clean.values()) + [account_id]
+    with get_conn() as conn:
+        conn.execute(f"UPDATE accounts SET {set_clause} WHERE id=?", values)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Users
+# ─────────────────────────────────────────────────────────────────────────────
+
+def create_user(
+    account_id: int,
+    email: str,
+    password_hash: str,
+    display_name: str,
+    role: str = "member",
+) -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO users (account_id, email, password_hash, display_name, role, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (account_id, email.lower().strip(), password_hash, display_name, role, _now()),
+        )
+        return cur.lastrowid
+
+
+def get_user(user_id: int) -> Optional[dict]:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def get_user_by_email(email: str) -> Optional[dict]:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM users WHERE email=?",
+            (email.lower().strip(),),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def list_users(account_id: int) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM users WHERE account_id=? ORDER BY created_at",
+            (account_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def update_user_login(user_id: int):
+    with get_conn() as conn:
+        conn.execute("UPDATE users SET last_login_at=? WHERE id=?", (_now(), user_id))
+
+
+def update_user(user_id: int, fields: dict, account_id: Optional[int] = None):
+    """Update user fields. Caller is responsible for password hashing."""
+    allowed = {"password_hash", "display_name", "role"}
+    clean = {k: v for k, v in fields.items() if k in allowed}
+    if not clean:
+        return
+    set_clause = ", ".join(f"{k}=?" for k in clean)
+    values = list(clean.values()) + [user_id]
+    with get_conn() as conn:
+        if account_id is not None:
+            values.append(account_id)
+            conn.execute(
+                f"UPDATE users SET {set_clause} WHERE id=? AND account_id=?",
+                values,
+            )
+        else:
+            conn.execute(f"UPDATE users SET {set_clause} WHERE id=?", values)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Invites
+# ─────────────────────────────────────────────────────────────────────────────
+
+def create_invite(
+    account_id: int,
+    email: str,
+    token: str,
+    invited_by: int,
+    expires_at: str,
+) -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO invites (account_id, email, token, invited_by, expires_at, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (account_id, email.lower().strip(), token, invited_by, expires_at, _now()),
+        )
+        return cur.lastrowid
+
+
+def get_invite_by_token(token: str) -> Optional[dict]:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM invites WHERE token=?", (token,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def list_pending_invites(account_id: int) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM invites WHERE account_id=? AND accepted_at IS NULL "
+            "ORDER BY created_at DESC",
+            (account_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def mark_invite_accepted(invite_id: int):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE invites SET accepted_at=? WHERE id=?",
+            (_now(), invite_id),
+        )
+
+
+def delete_invite(invite_id: int, account_id: int):
+    with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM invites WHERE id=? AND account_id=?",
+            (invite_id, account_id),
+        )
