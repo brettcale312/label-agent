@@ -264,8 +264,9 @@ async def api_config_flags():
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request, next: str = "/", error: Optional[str] = None):
     return templates.TemplateResponse(
+        request,
         "login.html",
-        {"request": request, "next": next, "error": error},
+        {"next": next, "error": error},
     )
 
 
@@ -281,8 +282,9 @@ async def login_submit(
     if not user or not verify_password(password, user["password_hash"]):
         # Render login page with error rather than redirect — keeps the entered next path.
         return templates.TemplateResponse(
+            request,
             "login.html",
-            {"request": request, "next": next, "error": "Invalid email or password."},
+            {"next": next, "error": "Invalid email or password."},
             status_code=401,
         )
 
@@ -327,9 +329,9 @@ async def invite_accept_page(request: Request, token: str = ""):
     invite = get_invite_by_token(token) if token else None
     valid, reason = _invite_is_valid(invite)
     return templates.TemplateResponse(
+        request,
         "invite_accept.html",
         {
-            "request": request,
             "token": token,
             "invite": invite if valid else None,
             "error": reason,
@@ -349,8 +351,9 @@ async def invite_accept_submit(
     valid, reason = _invite_is_valid(invite)
     if not valid:
         return templates.TemplateResponse(
+            request,
             "invite_accept.html",
-            {"request": request, "token": token, "invite": None, "error": reason},
+            {"token": token, "invite": None, "error": reason},
             status_code=400,
         )
 
@@ -360,16 +363,18 @@ async def invite_accept_submit(
         # Edge case: someone with the invitee's email signed up between invite
         # creation and acceptance. Bail rather than silently overwrite.
         return templates.TemplateResponse(
+            request,
             "invite_accept.html",
-            {"request": request, "token": token, "invite": None,
+            {"token": token, "invite": None,
              "error": "An account with this email already exists. Sign in instead."},
             status_code=400,
         )
 
     if len(password) < 8:
         return templates.TemplateResponse(
+            request,
             "invite_accept.html",
-            {"request": request, "token": token, "invite": invite,
+            {"token": token, "invite": invite,
              "error": "Password must be at least 8 characters."},
             status_code=400,
         )
@@ -419,9 +424,9 @@ async def settings_page(request: Request):
     safe_account = {k: v for k, v in account.items() if k != "sandpiper_password"}
     safe_account["sandpiper_password_set"] = bool(account.get("sandpiper_password"))
     return templates.TemplateResponse(
+        request,
         "settings.html",
         {
-            "request": request,
             "user": user,
             "account": safe_account,
             "members": members,
@@ -504,9 +509,9 @@ async def capture_page(request: Request):
     user = current_user(request)
     open_batch = get_open_batch(account_id=account_id)
     return templates.TemplateResponse(
+        request,
         "mobile/capture.html",
         {
-            "request": request,
             "open_batch": open_batch,
             "flags": _feature_flags(),
             "user": user,
@@ -520,9 +525,9 @@ async def dashboard_page(request: Request):
     user = current_user(request)
     batches = list_batches(account_id=account_id)
     return templates.TemplateResponse(
+        request,
         "desktop/dashboard.html",
         {
-            "request": request,
             "batches": batches,
             "flags": _feature_flags(),
             "user": user,
@@ -534,8 +539,9 @@ async def dashboard_page(request: Request):
 async def print_page(request: Request):
     user = current_user(request)
     return templates.TemplateResponse(
+        request,
         "desktop/print.html",
-        {"request": request, "user": user},
+        {"user": user},
     )
 
 
