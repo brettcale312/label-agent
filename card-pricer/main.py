@@ -59,7 +59,7 @@ from app.config import (
     LOCAL_IP, PORT, IOS_SHORTCUT_NAME,
     ENABLE_GENERALIST_MODE, LABEL_FORMAT,
     ENABLE_CATEGORY_PICKER, ENABLE_MAKERS_MARK_SLOT, ENABLE_UPC_SLOT,
-    ENABLE_EXTRA_PHOTOS, EXTRA_PHOTO_LIMIT, ENABLE_MOBILE_EDIT,
+    ENABLE_EXTRA_PHOTOS, EXTRA_PHOTO_LIMIT, ENABLE_MOBILE_EDIT, ENABLE_COST_FIELD,
     ENABLE_RANGE_PRICING, DEFAULT_CATEGORY, KNOWN_CATEGORIES,
 )
 from app.database import (
@@ -237,10 +237,15 @@ class StartBatchRequest(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    """Redirect to capture (mobile) or dashboard (desktop) based on User-Agent."""
+    """Redirect to capture (mobile) or dashboard (desktop) based on User-Agent.
+    iPhones and Android phones go to /capture.
+    iPads, desktops, and everything else go to /dashboard.
+    (iPads do NOT include 'mobile' in their UA — they go to dashboard by default,
+    but can still navigate to /capture directly to use the camera.)
+    """
     ua = request.headers.get("user-agent", "").lower()
-    is_mobile = any(k in ua for k in ("iphone", "android", "mobile"))
-    if is_mobile:
+    is_phone = any(k in ua for k in ("iphone", "android", "mobile"))
+    if is_phone:
         return HTMLResponse(status_code=302, headers={"Location": "/capture"})
     return HTMLResponse(status_code=302, headers={"Location": "/dashboard"})
 
@@ -255,6 +260,7 @@ def _feature_flags() -> dict:
         "extra_photos": ENABLE_EXTRA_PHOTOS,
         "extra_photo_limit": EXTRA_PHOTO_LIMIT,
         "mobile_edit": ENABLE_MOBILE_EDIT,
+        "cost_field": ENABLE_COST_FIELD,
         "range_pricing": ENABLE_RANGE_PRICING,
         "default_category": DEFAULT_CATEGORY,
         "known_categories": KNOWN_CATEGORIES,
@@ -661,6 +667,7 @@ async def api_ingest(
     request: Request,
     files: list[UploadFile] = File(...),
     category: Optional[str] = Form(None),
+    cost: Optional[float] = Form(None),
     makers_mark: Optional[UploadFile] = File(None),
     upc_image: Optional[UploadFile] = File(None),
 ):
@@ -742,6 +749,8 @@ async def api_ingest(
     result["image_path"] = ",".join(image_paths)
     if makers_mark_path:
         result["makers_mark_image_path"] = makers_mark_path
+    if cost is not None:
+        result["cost"] = cost
 
     # Save to database
     card_id = insert_card(batch_id, result)
@@ -896,11 +905,12 @@ async def _upload_cards_to_sandpiper(cards: list[dict], account_id: int) -> dict
         inv_num = card.get("inventory_number") or f"CRD-{card_id}"
         title   = card.get("display_title") or card.get("card_name") or "Card"
         price   = float(card.get("final_price") or 0)
+        cost    = float(card.get("cost") or 0)
 
         logger.info(f"[upload] Card #{card_id} ({i+1}/{len(cards)}): {title!r} @ ${price}")
 
         try:
-            barcode = await create_item_and_barcode(inv_num, title, price, account_id)
+            barcode = await create_item_and_barcode(inv_num, title, price, account_id, cost_dollars=cost)
             if barcode and barcode != "#":
                 mark_uploaded(card_id, inv_num, barcode)
                 try:

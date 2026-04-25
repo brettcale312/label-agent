@@ -56,6 +56,10 @@ EXTRA_PHOTO_LIMIT: int = int(os.getenv("EXTRA_PHOTO_LIMIT", "6"))
 # Restore the old mobile edit-on-site view (removed when desktop-first was adopted).
 ENABLE_MOBILE_EDIT: bool = os.getenv("ENABLE_MOBILE_EDIT", "false").lower() == "true"
 
+# Show a purchase cost field on capture + desktop grid; include cost in Sandpiper upload.
+# Useful for estate-sale operators who want to track acquisition cost per item.
+ENABLE_COST_FIELD: bool = os.getenv("ENABLE_COST_FIELD", "false").lower() == "true"
+
 # Default category for items when the picker is off or a batch has no category.
 DEFAULT_CATEGORY: str = os.getenv("DEFAULT_CATEGORY", "card").lower()
 

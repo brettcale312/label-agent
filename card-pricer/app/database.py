@@ -179,6 +179,7 @@ def init_db():
             "ALTER TABLE cards   ADD COLUMN IF NOT EXISTS price_user_confirmed INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE cards   ADD COLUMN IF NOT EXISTS upc TEXT",
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS label_format TEXT NOT NULL DEFAULT 'auto'",
+            "ALTER TABLE cards   ADD COLUMN IF NOT EXISTS cost DOUBLE PRECISION",
         ]
         for stmt in _migrations:
             conn.execute(stmt)
@@ -381,7 +382,7 @@ def insert_card(batch_id: int, data: dict) -> int:
                 image_path, search_query, ai_notes,
                 category, era, maker, material, dimensions,
                 makers_mark_image_path, price_user_confirmed,
-                upc, created_at
+                upc, cost, created_at
             ) VALUES (
                 %(batch_id)s, %(sequence_num)s, 'pending',
                 %(card_name)s, %(set_name)s, %(card_number)s, %(display_title)s,
@@ -393,7 +394,7 @@ def insert_card(batch_id: int, data: dict) -> int:
                 %(image_path)s, %(search_query)s, %(ai_notes)s,
                 %(category)s, %(era)s, %(maker)s, %(material)s, %(dimensions)s,
                 %(makers_mark_image_path)s, %(price_user_confirmed)s,
-                %(upc)s, %(created_at)s
+                %(upc)s, %(cost)s, %(created_at)s
             ) RETURNING id
         """, {
             "batch_id": batch_id,
@@ -428,6 +429,7 @@ def insert_card(batch_id: int, data: dict) -> int:
             "makers_mark_image_path": data.get("makers_mark_image_path"),
             "price_user_confirmed": 1 if data.get("price_user_confirmed") else 0,
             "upc": data.get("upc"),
+            "cost": data.get("cost"),
             "created_at": _now(),
         }).fetchone()
         return row["id"]

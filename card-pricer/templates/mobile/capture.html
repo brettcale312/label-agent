@@ -294,6 +294,14 @@
     </div>
     {% endif %}
 
+    {% if flags.cost_field %}
+    <div style="margin-bottom:0.8em;">
+      <label style="display:block;font-size:0.82em;color:#666;margin-bottom:0.3em;font-weight:600;">Purchase Cost ($) <span style="font-weight:400;color:#9ca3af;">optional</span></label>
+      <input type="text" inputmode="decimal" id="cost-input" placeholder="0.00"
+             style="width:100%;box-sizing:border-box;border:1px solid #d1d5db;border-radius:8px;padding:0.55em 0.7em;font-size:1em;">
+    </div>
+    {% endif %}
+
     <button id="submit-btn" onclick="submitCard()">Price This Item</button>
     <div id="status"></div>
     <!-- Shown after a successful scan: quick-copy for identical cards -->
@@ -404,6 +412,8 @@
     selectedFiles.forEach(f => form.append('files', f));
     const itemCat = document.getElementById('item-category')?.value;
     if (itemCat) form.append('category', itemCat);
+    const costInput = document.getElementById('cost-input');
+    if (costInput && costInput.value.trim()) form.append('cost', costInput.value.trim());
     const markInput = document.getElementById('mark-input');
     if (markInput && markInput.files && markInput.files[0]) {
       form.append('makers_mark', markInput.files[0]);
@@ -544,6 +554,8 @@
 
     document.getElementById('ef-display_title').value = c.display_title || '';
     document.getElementById('ef-final_price').value   = c.final_price != null ? c.final_price : '';
+    const efCost = document.getElementById('ef-cost');
+    if (efCost) efCost.value = c.cost != null ? c.cost : '';
     document.getElementById('ef-bullet_1').value      = c.bullet_1 || '';
     document.getElementById('ef-bullet_2').value      = c.bullet_2 || '';
     document.getElementById('ef-bullet_3').value      = c.bullet_3 || '';
@@ -582,10 +594,13 @@
     btn.disabled = true; btn.textContent = 'Saving…';
 
     const priceVal = document.getElementById('ef-final_price').value;
+    const costEl   = document.getElementById('ef-cost');
+    const costVal  = costEl ? costEl.value : '';
     const fields = {
       display_title: document.getElementById('ef-display_title').value,
       card_name:     document.getElementById('ef-display_title').value,
       final_price:   priceVal !== '' ? parseFloat(priceVal) : null,
+      cost:          costVal !== '' ? parseFloat(costVal) : null,
       bullet_1:      document.getElementById('ef-bullet_1').value,
       bullet_2:      document.getElementById('ef-bullet_2').value,
       bullet_3:      document.getElementById('ef-bullet_3').value,
@@ -656,6 +671,14 @@
              style="width:100%;box-sizing:border-box;border:1px solid #ddd;border-radius:6px;padding:0.5em;font-size:1.1em;font-weight:700;">
     </div>
     <div id="ef-range-hint" style="font-size:0.78em;color:#888;margin-bottom:0.8em;min-height:1em;"></div>
+    {% if flags.cost_field %}
+    <div style="margin-bottom:0.8em;">
+      <label style="font-size:0.8em;font-weight:600;color:#555;display:block;margin-bottom:0.2em;">Cost ($) <span style="font-weight:400;color:#9ca3af;">optional</span></label>
+      <input type="text" inputmode="decimal" id="ef-cost"
+             onfocus="this.select()"
+             style="width:100%;box-sizing:border-box;border:1px solid #ddd;border-radius:6px;padding:0.5em;font-size:1em;">
+    </div>
+    {% endif %}
     <div style="margin-bottom:0.8em;">
       <label style="font-size:0.8em;font-weight:600;color:#555;display:block;margin-bottom:0.2em;">Bullet 1</label>
       <textarea id="ef-bullet_1" rows="2" style="width:100%;box-sizing:border-box;border:1px solid #ddd;border-radius:6px;padding:0.5em;font-size:0.9em;resize:vertical;"></textarea>

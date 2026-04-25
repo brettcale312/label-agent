@@ -326,6 +326,10 @@
         <label>Final Price ($)</label>
         <input type="number" id="pf-final_price" step="0.25" min="0" style="font-size:1.05em;font-weight:700;">
       </div>
+      <div class="panel-field" id="pf-cost-row" style="display:none;">
+        <label>Purchase Cost ($) <span style="font-weight:400;color:#9ca3af;font-size:0.85em;">optional</span></label>
+        <input type="number" id="pf-cost" step="0.25" min="0">
+      </div>
       <div class="panel-field">
         <label>Bullet 1</label>
         <textarea id="pf-bullet_1" rows="2" placeholder="First selling point for the price tag"></textarea>
@@ -589,6 +593,7 @@
         { title: 'Bullet 1', field: 'bullet_1', minWidth: 160, tooltip: tip },
         { title: 'Bullet 2', field: 'bullet_2', minWidth: 160, tooltip: tip },
         { title: 'Price', field: 'final_price', width: 80, formatter: priceFormatter },
+        ...(FLAGS.cost_field ? [{ title: 'Cost', field: 'cost', width: 75, formatter: priceFormatter }] : []),
         { title: 'Inv #', field: 'inventory_number', width: 80 },
         { title: 'Barcode', field: 'barcode', width: 100 },
         { title: 'AI Notes', field: 'ai_notes', width: 180, tooltip: tip },
@@ -850,7 +855,7 @@
     'display_title', 'set_name', 'card_number', 'rarity', 'condition',
     'publisher_brand', 'year',
     'bullet_1', 'bullet_2', 'bullet_3',
-    'final_price', 'base_price', 'price_source',
+    'final_price', 'base_price', 'price_source', 'cost',
     // Generalist fields — only surfaced when ENABLE_GENERALIST_MODE=true,
     // otherwise they stay null for card rows and aren't shown in the UI.
     'category', 'era', 'maker', 'material', 'dimensions',
@@ -871,6 +876,10 @@
 
   function openPanel(data) {
     _currentCardId = data.id;
+
+    // Show cost row only when the flag is on
+    const costRow = document.getElementById('pf-cost-row');
+    if (costRow) costRow.style.display = FLAGS.cost_field ? '' : 'none';
 
     // Populate all fields
     [...EDITABLE_FIELDS, ...READONLY_FIELDS].forEach(f => {
@@ -941,8 +950,8 @@
     EDITABLE_FIELDS.forEach(f => {
       const el = document.getElementById(`pf-${f}`);
       if (!el) return;
-      if (f === 'final_price' || f === 'base_price') {
-        fields[f] = parseFloat(el.value) || 0;
+      if (f === 'final_price' || f === 'base_price' || f === 'cost') {
+        fields[f] = el.value !== '' ? (parseFloat(el.value) || 0) : null;
       } else {
         fields[f] = el.value;
       }

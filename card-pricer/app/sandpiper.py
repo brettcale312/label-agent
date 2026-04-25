@@ -90,6 +90,7 @@ async def create_item_and_barcode(
     description: str,
     price_dollars: float,
     db_account_id: int,
+    cost_dollars: float = 0,
 ) -> Optional[str]:
     """
     Create an inventory item in the account's Sandpiper booth and return its barcode.
@@ -129,8 +130,8 @@ async def create_item_and_barcode(
                 "inventoryNumber": inv_num,
                 "description": description[:80],
                 "acquired": int(time.time()),
-                "originalCost": 0,
-                "totalCost": 0,
+                "originalCost": int(round(cost_dollars * 100)),
+                "totalCost": int(round(cost_dollars * 100)),
                 "askingPrice": int(round(price_dollars * 100)),
             },
             headers=headers,
