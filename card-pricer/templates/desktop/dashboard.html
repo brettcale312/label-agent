@@ -256,7 +256,16 @@
     <a class="nav-item active" href="/dashboard">Review Grid</a>
     <a class="nav-item" href="/print">Print Labels</a>
     <a class="nav-item" href="/capture">Mobile Capture</a>
+    {% if user and user.role == 'owner' %}
+    <a class="nav-item" href="/settings">Settings</a>
+    {% endif %}
   </div>
+  {% if user %}
+  <div style="padding:0.6em 1em;border-top:1px solid #334155;font-size:0.78em;color:#94a3b8;">
+    <div style="margin-bottom:4px;">{{ user.display_name or user.email }}</div>
+    <a href="/logout" style="color:#64748b;text-decoration:underline;">Log out</a>
+  </div>
+  {% endif %}
   <div class="nav-section">Batches</div>
   <button class="btn-new-batch" onclick="startBatch()">+ New Batch</button>
   <div class="sidebar-batches" id="batch-list"></div>

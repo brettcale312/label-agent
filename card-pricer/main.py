@@ -69,12 +69,17 @@ from app.database import (
     mark_printed, delete_cards, delete_batch, archive_batch, unarchive_batch,
     prune_empty_batches, duplicate_card,
     get_user_by_email, update_user_login,
+    get_account, update_account, list_users, create_user,
+    create_invite, get_invite_by_token, list_pending_invites,
+    mark_invite_accepted, delete_invite,
 )
 from app.sandpiper import create_item_and_barcode, update_price as sandpiper_update_price
 from app.sheets import append_row
+from app import crypto
 from app.auth import (
-    AuthMiddleware, verify_password, set_session_cookie, clear_session_cookie,
-    current_user, current_account_id,
+    AuthMiddleware, hash_password, verify_password,
+    set_session_cookie, clear_session_cookie,
+    make_invite_token, current_user, current_account_id, require_owner,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -135,9 +140,56 @@ app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 # Startup
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _seed_first_owner():
+    """First-boot seed: if no accounts exist and SEED_OWNER_EMAIL/PASSWORD are set,
+    create a default account + owner user. Uses the legacy SANDPIPER_* env vars to
+    pre-populate the account's Sandpiper creds (so the existing single-user .env
+    keeps working through the multi-tenant transition). After this seed runs once,
+    further accounts come from scripts/create_account.py or invites.
+    """
+    from app.database import list_accounts, create_account, create_user, get_user_by_email
+
+    if list_accounts():
+        return  # already seeded
+
+    seed_email = os.getenv("SEED_OWNER_EMAIL")
+    seed_password = os.getenv("SEED_OWNER_PASSWORD")
+    if not (seed_email and seed_password):
+        logger.info("[seed] No accounts and no SEED_OWNER_EMAIL/PASSWORD — skipping seed")
+        return
+
+    if get_user_by_email(seed_email):
+        logger.warning(f"[seed] User {seed_email} exists but no account — skipping seed")
+        return
+
+    sp_username   = os.getenv("SANDPIPER_USERNAME")
+    sp_password   = os.getenv("SANDPIPER_PASSWORD")
+    sp_account_id = os.getenv("SANDPIPER_ACCOUNT_ID")
+    sp_booth      = os.getenv("SANDPIPER_BOOTH")
+
+    encrypted_pw = crypto.encrypt(sp_password) if sp_password else None
+
+    account_id = create_account(
+        name=os.getenv("SEED_ACCOUNT_NAME", "Default"),
+        sandpiper_username=sp_username,
+        sandpiper_password=encrypted_pw,
+        sandpiper_account_id=sp_account_id,
+        sandpiper_booth=sp_booth,
+    )
+    user_id = create_user(
+        account_id=account_id,
+        email=seed_email,
+        password_hash=hash_password(seed_password),
+        display_name=os.getenv("SEED_OWNER_NAME", seed_email.split("@")[0]),
+        role="owner",
+    )
+    logger.info(f"[seed] Created seed account #{account_id} + owner user #{user_id} ({seed_email})")
+
+
 @app.on_event("startup")
 async def startup():
     init_db()
+    _seed_first_owner()
     prune_empty_batches()
     logger.info("Database initialized")
 
@@ -247,6 +299,198 @@ async def logout(request: Request):
 
 @app.get("/health")
 async def health():
+    return {"ok": True}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Invite accept (public — bypass AuthMiddleware via PUBLIC_PATHS)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _invite_is_valid(invite: Optional[dict]) -> tuple[bool, Optional[str]]:
+    """Return (is_valid, reason_if_not). Single source of truth for invite validity."""
+    if not invite:
+        return False, "Invite not found."
+    if invite.get("accepted_at"):
+        return False, "This invite has already been used."
+    expires_at = invite.get("expires_at")
+    if expires_at and expires_at < datetime.utcnow().isoformat(timespec="seconds"):
+        return False, "This invite has expired."
+    return True, None
+
+
+@app.get("/invite/accept", response_class=HTMLResponse)
+async def invite_accept_page(request: Request, token: str = ""):
+    invite = get_invite_by_token(token) if token else None
+    valid, reason = _invite_is_valid(invite)
+    return templates.TemplateResponse(
+        "invite_accept.html",
+        {
+            "request": request,
+            "token": token,
+            "invite": invite if valid else None,
+            "error": reason,
+        },
+        status_code=200 if valid else 400,
+    )
+
+
+@app.post("/invite/accept")
+async def invite_accept_submit(
+    request: Request,
+    token: str = Form(...),
+    display_name: str = Form(...),
+    password: str = Form(...),
+):
+    invite = get_invite_by_token(token)
+    valid, reason = _invite_is_valid(invite)
+    if not valid:
+        return templates.TemplateResponse(
+            "invite_accept.html",
+            {"request": request, "token": token, "invite": None, "error": reason},
+            status_code=400,
+        )
+
+    # Email is locked to the invite — invitee can't change it.
+    email = invite["email"]
+    if get_user_by_email(email):
+        # Edge case: someone with the invitee's email signed up between invite
+        # creation and acceptance. Bail rather than silently overwrite.
+        return templates.TemplateResponse(
+            "invite_accept.html",
+            {"request": request, "token": token, "invite": None,
+             "error": "An account with this email already exists. Sign in instead."},
+            status_code=400,
+        )
+
+    if len(password) < 8:
+        return templates.TemplateResponse(
+            "invite_accept.html",
+            {"request": request, "token": token, "invite": invite,
+             "error": "Password must be at least 8 characters."},
+            status_code=400,
+        )
+
+    user_id = create_user(
+        account_id=invite["account_id"],
+        email=email,
+        password_hash=hash_password(password),
+        display_name=display_name.strip() or email.split("@")[0],
+        role="member",
+    )
+    mark_invite_accepted(invite["id"])
+    update_user_login(user_id)
+    logger.info(f"[invite] Accepted — user #{user_id} ({email}) joined account {invite['account_id']}")
+
+    response = RedirectResponse(url="/", status_code=302)
+    set_session_cookie(response, user_id)
+    return response
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Settings (owner-only)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class UpdateAccountRequest(BaseModel):
+    name: Optional[str] = None
+    sandpiper_username: Optional[str] = None
+    sandpiper_password: Optional[str] = None  # plaintext from the form; encrypted before storage
+    sandpiper_account_id: Optional[str] = None
+    sandpiper_booth: Optional[str] = None
+
+
+class CreateInviteRequest(BaseModel):
+    email: str
+
+
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request):
+    require_owner(request)
+    account_id = current_account_id(request)
+    user = current_user(request)
+    account = get_account(account_id) or {}
+    members = list_users(account_id)
+    invites = list_pending_invites(account_id)
+    # Strip the encrypted Sandpiper password before passing to the template —
+    # the form will show "(unchanged)" placeholder, never the ciphertext.
+    safe_account = {k: v for k, v in account.items() if k != "sandpiper_password"}
+    safe_account["sandpiper_password_set"] = bool(account.get("sandpiper_password"))
+    return templates.TemplateResponse(
+        "settings.html",
+        {
+            "request": request,
+            "user": user,
+            "account": safe_account,
+            "members": members,
+            "invites": invites,
+        },
+    )
+
+
+@app.post("/api/settings/account")
+async def api_settings_update_account(request: Request, body: UpdateAccountRequest):
+    """Update the current account's name + Sandpiper creds. Owner-only.
+
+    Sandpiper password: empty/None means 'leave unchanged'. The plaintext is
+    encrypted before being written.
+    """
+    require_owner(request)
+    account_id = current_account_id(request)
+
+    fields: dict = {}
+    if body.name is not None:
+        fields["name"] = body.name.strip()
+    if body.sandpiper_username is not None:
+        fields["sandpiper_username"] = body.sandpiper_username.strip()
+    if body.sandpiper_account_id is not None:
+        fields["sandpiper_account_id"] = body.sandpiper_account_id.strip()
+    if body.sandpiper_booth is not None:
+        fields["sandpiper_booth"] = body.sandpiper_booth.strip()
+    if body.sandpiper_password:
+        # Only update password when a new one is provided. Empty string ⇒ keep current.
+        fields["sandpiper_password"] = crypto.encrypt(body.sandpiper_password)
+
+    if not fields:
+        return {"ok": True, "updated": 0}
+
+    update_account(account_id, fields)
+    logger.info(f"[settings] Updated account {account_id}: keys={sorted(fields.keys())}")
+    return {"ok": True, "updated": len(fields)}
+
+
+@app.post("/api/settings/invites")
+async def api_settings_create_invite(request: Request, body: CreateInviteRequest):
+    """Owner creates an invite. Returns the URL — owner copies + texts it."""
+    require_owner(request)
+    account_id = current_account_id(request)
+    user = current_user(request)
+
+    email = body.email.strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(400, "Invalid email")
+    if get_user_by_email(email):
+        raise HTTPException(400, "A user with that email already exists")
+
+    token = make_invite_token()
+    # 7-day expiry — keep ISO so it sorts/compares lexicographically with _now().
+    from datetime import timedelta
+    expires_at = (datetime.utcnow() + timedelta(days=7)).isoformat(timespec="seconds")
+    invite_id = create_invite(
+        account_id=account_id, email=email, token=token,
+        invited_by=user["id"], expires_at=expires_at,
+    )
+
+    # Build the invite URL using the request's host so it works on both local + prod.
+    base = str(request.base_url).rstrip("/")
+    invite_url = f"{base}/invite/accept?token={token}"
+    logger.info(f"[settings] Created invite #{invite_id} for {email} (account {account_id})")
+    return {"ok": True, "invite_id": invite_id, "url": invite_url, "expires_at": expires_at}
+
+
+@app.post("/api/settings/invites/{invite_id}/delete")
+async def api_settings_delete_invite(request: Request, invite_id: int):
+    require_owner(request)
+    account_id = current_account_id(request)
+    delete_invite(invite_id, account_id)
     return {"ok": True}
 
 

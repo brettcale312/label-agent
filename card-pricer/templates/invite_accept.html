@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Accept invite — Card Pricer</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #1a1d24;
+      --border: #2a2f38;
+      --text: #e8eaee;
+      --muted: #9aa3b2;
+      --accent: #4f8cff;
+      --accent-hover: #3a78f0;
+      --error-bg: #3a1f24;
+      --error-border: #6b2a33;
+      --error-text: #ffb1ba;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    .card {
+      width: 100%;
+      max-width: 420px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 28px 24px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+    }
+    h1 {
+      margin: 0 0 4px;
+      font-size: 20px;
+      font-weight: 600;
+    }
+    .subtitle {
+      color: var(--muted);
+      font-size: 13px;
+      margin: 0 0 16px;
+    }
+    .invite-meta {
+      background: #0f1218;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 13px;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    .invite-meta strong { color: var(--text); }
+    label {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin: 14px 0 6px;
+      letter-spacing: 0.02em;
+    }
+    input[type="text"], input[type="password"] {
+      width: 100%;
+      padding: 10px 12px;
+      background: #0f1218;
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 15px;
+      outline: none;
+    }
+    input:focus { border-color: var(--accent); }
+    button {
+      width: 100%;
+      margin-top: 20px;
+      padding: 11px 14px;
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    button:hover { background: var(--accent-hover); }
+    .error {
+      margin-top: 14px;
+      padding: 10px 12px;
+      background: var(--error-bg);
+      border: 1px solid var(--error-border);
+      color: var(--error-text);
+      border-radius: 8px;
+      font-size: 13px;
+    }
+    .hint {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 6px;
+    }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Accept invite</h1>
+
+    {% if invite %}
+      <p class="subtitle">Finish setting up your account.</p>
+      <div class="invite-meta">
+        Joining as <strong>{{ invite.email }}</strong>
+      </div>
+
+      <form method="post" action="/invite/accept">
+        <input type="hidden" name="token" value="{{ token }}">
+
+        <label for="display_name">Display name</label>
+        <input id="display_name" name="display_name" type="text"
+               placeholder="How your name shows in the app" required>
+
+        <label for="password">Choose a password</label>
+        <input id="password" name="password" type="password"
+               autocomplete="new-password" minlength="8" required>
+        <div class="hint">At least 8 characters.</div>
+
+        {% if error %}
+          <div class="error">{{ error }}</div>
+        {% endif %}
+
+        <button type="submit">Create account & sign in</button>
+      </form>
+    {% else %}
+      <p class="subtitle">Something's wrong with this invite.</p>
+      <div class="error">{{ error or "Invalid invite." }}</div>
+      <p class="hint" style="margin-top: 16px;">
+        Ask the person who sent you the link to generate a new one.
+        <br><br>
+        <a href="/login">Go to sign-in</a>
+      </p>
+    {% endif %}
+  </div>
+</body>
+</html>

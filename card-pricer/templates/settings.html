@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Settings — Card Pricer</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #1a1d24;
+      --panel-2: #0f1218;
+      --border: #2a2f38;
+      --text: #e8eaee;
+      --muted: #9aa3b2;
+      --accent: #4f8cff;
+      --accent-hover: #3a78f0;
+      --danger: #e15c66;
+      --ok-bg: #1f3a26;
+      --ok-text: #b1ffc4;
+      --error-bg: #3a1f24;
+      --error-text: #ffb1ba;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 14px 22px;
+      border-bottom: 1px solid var(--border);
+    }
+    .topbar a { color: var(--muted); text-decoration: none; font-size: 14px; }
+    .topbar a:hover { color: var(--text); }
+    .container {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 30px 22px 80px;
+    }
+    h1 { margin: 0 0 4px; font-size: 24px; }
+    .subtitle { color: var(--muted); margin: 0 0 28px; font-size: 14px; }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 22px 22px 18px;
+      margin-bottom: 22px;
+    }
+    section h2 {
+      margin: 0 0 4px;
+      font-size: 16px;
+      font-weight: 600;
+    }
+    section .desc {
+      margin: 0 0 18px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    label {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin: 12px 0 6px;
+      letter-spacing: 0.02em;
+    }
+    input[type="text"], input[type="email"], input[type="password"] {
+      width: 100%;
+      padding: 9px 11px;
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 14px;
+    }
+    .row { display: flex; gap: 12px; }
+    .row > * { flex: 1; }
+    button {
+      padding: 9px 14px;
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    button:hover { background: var(--accent-hover); }
+    button.secondary {
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--border);
+    }
+    button.secondary:hover { color: var(--text); border-color: var(--muted); }
+    button.danger {
+      background: transparent;
+      color: var(--danger);
+      border: 1px solid var(--border);
+      padding: 5px 10px;
+      font-size: 12px;
+    }
+    .toolbar { margin-top: 16px; display: flex; gap: 10px; align-items: center; }
+    .toast {
+      padding: 10px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      margin-top: 12px;
+      display: none;
+    }
+    .toast.ok { background: var(--ok-bg); color: var(--ok-text); }
+    .toast.err { background: var(--error-bg); color: var(--error-text); }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td {
+      text-align: left;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    th { color: var(--muted); font-weight: 500; font-size: 12px; }
+    .pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      background: #2a3344;
+      color: var(--muted);
+    }
+    .pill.owner { background: #2d3a55; color: #b9d0ff; }
+    .url-box {
+      margin-top: 10px;
+      padding: 10px 12px;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 12px;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <strong>Card Pricer · Settings</strong>
+    <div>
+      <a href="/dashboard" style="margin-right: 16px;">Dashboard</a>
+      <a href="/logout">Logout</a>
+    </div>
+  </div>
+
+  <div class="container">
+    <h1>Account settings</h1>
+    <p class="subtitle">
+      Signed in as <strong>{{ user.display_name or user.email }}</strong>
+      <span class="pill owner">{{ user.role }}</span>
+    </p>
+
+    <!-- ── Account ────────────────────────────────────────────── -->
+    <section>
+      <h2>Account</h2>
+      <p class="desc">The display name shown for this tenant.</p>
+      <form id="account-form">
+        <label for="account-name">Display name</label>
+        <input id="account-name" type="text" name="name" value="{{ account.name or '' }}">
+        <div class="toolbar">
+          <button type="submit">Save</button>
+          <div id="account-toast" class="toast"></div>
+        </div>
+      </form>
+    </section>
+
+    <!-- ── Sandpiper ──────────────────────────────────────────── -->
+    <section>
+      <h2>Sandpiper credentials</h2>
+      <p class="desc">
+        Used to upload items to your booth and pull barcodes back.
+        Leave the password field blank to keep the existing one.
+      </p>
+      <form id="sandpiper-form">
+        <label for="sp-username">Username</label>
+        <input id="sp-username" type="text" name="sandpiper_username" value="{{ account.sandpiper_username or '' }}">
+
+        <label for="sp-password">
+          Password
+          {% if account.sandpiper_password_set %}
+            <span style="color: var(--ok-text);">· set</span>
+          {% else %}
+            <span style="color: var(--danger);">· not set</span>
+          {% endif %}
+        </label>
+        <input id="sp-password" type="password" name="sandpiper_password"
+               placeholder="{{ '(unchanged)' if account.sandpiper_password_set else 'Enter Sandpiper password' }}"
+               autocomplete="new-password">
+
+        <div class="row">
+          <div>
+            <label for="sp-account-id">Sandpiper account_id</label>
+            <input id="sp-account-id" type="text" name="sandpiper_account_id" value="{{ account.sandpiper_account_id or '' }}">
+          </div>
+          <div>
+            <label for="sp-booth">Booth</label>
+            <input id="sp-booth" type="text" name="sandpiper_booth" value="{{ account.sandpiper_booth or '' }}">
+          </div>
+        </div>
+
+        <div class="toolbar">
+          <button type="submit">Save</button>
+          <div id="sandpiper-toast" class="toast"></div>
+        </div>
+      </form>
+    </section>
+
+    <!-- ── Members ────────────────────────────────────────────── -->
+    <section>
+      <h2>Team members</h2>
+      <p class="desc">Anyone listed here can sign in and use this account's batches and Sandpiper booth.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Email</th>
+            <th>Role</th>
+            <th>Last login</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for m in members %}
+            <tr>
+              <td>{{ m.display_name or '—' }}</td>
+              <td>{{ m.email }}</td>
+              <td><span class="pill {{ m.role }}">{{ m.role }}</span></td>
+              <td>{{ (m.last_login_at or '—')[:10] }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+
+    <!-- ── Invites ────────────────────────────────────────────── -->
+    <section>
+      <h2>Invite a teammate</h2>
+      <p class="desc">
+        Generate a one-time link, then text or email it to the person.
+        Links expire after 7 days.
+      </p>
+      <form id="invite-form">
+        <label for="invite-email">Email</label>
+        <input id="invite-email" type="email" name="email" placeholder="teammate@example.com" required>
+        <div class="toolbar">
+          <button type="submit">Generate invite link</button>
+          <div id="invite-toast" class="toast"></div>
+        </div>
+        <div id="invite-url" class="url-box" style="display: none;"></div>
+      </form>
+
+      {% if invites %}
+        <h3 style="margin-top: 22px; margin-bottom: 6px; font-size: 13px; color: var(--muted);">Pending invites</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Email</th>
+              <th>Expires</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for inv in invites %}
+              <tr id="invite-row-{{ inv.id }}">
+                <td>{{ inv.email }}</td>
+                <td>{{ inv.expires_at[:10] }}</td>
+                <td><button class="danger" data-invite-id="{{ inv.id }}" data-action="revoke">Revoke</button></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+    </section>
+  </div>
+
+  <script>
+    function showToast(elId, msg, ok) {
+      const el = document.getElementById(elId);
+      el.textContent = msg;
+      el.className = 'toast ' + (ok ? 'ok' : 'err');
+      el.style.display = 'inline-block';
+      setTimeout(() => { el.style.display = 'none'; }, 3500);
+    }
+
+    async function postJson(url, body) {
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body || {}),
+      });
+      const data = await r.json().catch(() => ({}));
+      return {ok: r.ok, status: r.status, data};
+    }
+
+    document.getElementById('account-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = document.getElementById('account-name').value;
+      const r = await postJson('/api/settings/account', {name});
+      showToast('account-toast', r.ok ? 'Saved' : (r.data.detail || 'Error'), r.ok);
+    });
+
+    document.getElementById('sandpiper-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const body = {
+        sandpiper_username: document.getElementById('sp-username').value,
+        sandpiper_account_id: document.getElementById('sp-account-id').value,
+        sandpiper_booth: document.getElementById('sp-booth').value,
+      };
+      const pw = document.getElementById('sp-password').value;
+      if (pw) body.sandpiper_password = pw;
+      const r = await postJson('/api/settings/account', body);
+      showToast('sandpiper-toast', r.ok ? 'Saved' : (r.data.detail || 'Error'), r.ok);
+      if (r.ok && pw) document.getElementById('sp-password').value = '';
+    });
+
+    document.getElementById('invite-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const email = document.getElementById('invite-email').value;
+      const r = await postJson('/api/settings/invites', {email});
+      if (r.ok) {
+        const box = document.getElementById('invite-url');
+        box.textContent = r.data.url;
+        box.style.display = 'block';
+        showToast('invite-toast', 'Invite created — copy the link below', true);
+        document.getElementById('invite-email').value = '';
+        // Refresh after a beat so the new pending row shows up.
+        setTimeout(() => location.reload(), 1500);
+      } else {
+        showToast('invite-toast', r.data.detail || 'Error', false);
+      }
+    });
+
+    document.querySelectorAll('button[data-action="revoke"]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.inviteId;
+        if (!confirm('Revoke this invite? The link will stop working.')) return;
+        const r = await postJson(`/api/settings/invites/${id}/delete`);
+        if (r.ok) {
+          document.getElementById('invite-row-' + id).remove();
+        } else {
+          alert(r.data.detail || 'Error revoking invite');
+        }
+      });
+    });
+  </script>
+</body>
+</html>
