@@ -97,19 +97,23 @@ logger = logging.getLogger("main")
 # ─────────────────────────────────────────────────────────────────────────────
 
 BASE_DIR = Path(__file__).parent
-UPLOADS_DIR = BASE_DIR / "uploads"
-LABELS_DIR = BASE_DIR / "labels"
+# STORAGE_ROOT: writable directory for uploads + labels.
+# Unset locally  → files sit inside the repo (current behaviour).
+# Set to /data on Railway → persisted on the mounted volume.
+STORAGE_ROOT = Path(os.getenv("STORAGE_ROOT", str(BASE_DIR)))
+UPLOADS_DIR = STORAGE_ROOT / "uploads"
+LABELS_DIR  = STORAGE_ROOT / "labels"
 LABEL_SCRIPT = Path(os.getenv(
     "LABEL_SCRIPT_PATH",
-    r"C:\dev\python\label_tools\2x2_TradingCard_Labels\make_card_2x2_labels.py"
+    str(BASE_DIR / "label_print" / "make_card_2x2_labels.py")
 ))
 LABEL_SCRIPT_4X3 = Path(os.getenv(
     "LABEL_SCRIPT_4X3_PATH",
-    r"C:\dev\python\label_tools\4x3_Comic_Labels\make_comic_4x3_labels.py"
+    str(BASE_DIR / "label_print" / "make_comic_4x3_labels.py")
 ))
 
 for d in (UPLOADS_DIR, LABELS_DIR):
-    d.mkdir(exist_ok=True)
+    d.mkdir(parents=True, exist_ok=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # App

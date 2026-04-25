@@ -1,0 +1,11 @@
+.venv
+__pycache__
+*.pyc
+*.db
+*.db-wal
+*.db-shm
+uploads/
+labels/
+.env
+.git
+.gitignore
