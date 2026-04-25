@@ -46,7 +46,7 @@ from typing import Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, Request, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -68,9 +68,14 @@ from app.database import (
     get_approved_cards, get_uploaded_cards, mark_uploaded, mark_sandpiper_error,
     mark_printed, delete_cards, delete_batch, archive_batch, unarchive_batch,
     prune_empty_batches, duplicate_card,
+    get_user_by_email, update_user_login,
 )
 from app.sandpiper import create_item_and_barcode, update_price as sandpiper_update_price
 from app.sheets import append_row
+from app.auth import (
+    AuthMiddleware, verify_password, set_session_cookie, clear_session_cookie,
+    current_user, current_account_id,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Logging
@@ -106,6 +111,12 @@ for d in (UPLOADS_DIR, LABELS_DIR):
 # ─────────────────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="Card Pricer v2")
+
+# Auth middleware runs first — every request gets request.state.user / .account_id
+# (or is redirected/401'd before reaching a route). Mounted before CORS so that
+# unauthenticated cross-origin calls don't get CORS-friendly headers added on top
+# of a 401.
+app.add_middleware(AuthMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -190,29 +201,93 @@ async def api_config_flags():
     return _feature_flags()
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Auth routes (public — bypass AuthMiddleware via PUBLIC_PATHS)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request, next: str = "/", error: Optional[str] = None):
+    return templates.TemplateResponse(
+        "login.html",
+        {"request": request, "next": next, "error": error},
+    )
+
+
+@app.post("/login")
+async def login_submit(
+    request: Request,
+    email: str = Form(...),
+    password: str = Form(...),
+    next: str = Form("/"),
+):
+    """Validate credentials → set signed session cookie → redirect to `next`."""
+    user = get_user_by_email(email.strip().lower())
+    if not user or not verify_password(password, user["password_hash"]):
+        # Render login page with error rather than redirect — keeps the entered next path.
+        return templates.TemplateResponse(
+            "login.html",
+            {"request": request, "next": next, "error": "Invalid email or password."},
+            status_code=401,
+        )
+
+    update_user_login(user["id"])
+    safe_next = next if next.startswith("/") and not next.startswith("//") else "/"
+    response = RedirectResponse(url=safe_next, status_code=302)
+    set_session_cookie(response, user["id"])
+    logger.info(f"[auth] Login OK — user={user['email']!r} account={user['account_id']}")
+    return response
+
+
+@app.get("/logout")
+async def logout(request: Request):
+    response = RedirectResponse(url="/login", status_code=302)
+    clear_session_cookie(response)
+    return response
+
+
+@app.get("/health")
+async def health():
+    return {"ok": True}
+
+
 @app.get("/capture", response_class=HTMLResponse)
 async def capture_page(request: Request):
-    open_batch = get_open_batch()
+    account_id = current_account_id(request)
+    user = current_user(request)
+    open_batch = get_open_batch(account_id=account_id)
     return templates.TemplateResponse(
         "mobile/capture.html",
-        {"request": request, "open_batch": open_batch, "flags": _feature_flags()},
+        {
+            "request": request,
+            "open_batch": open_batch,
+            "flags": _feature_flags(),
+            "user": user,
+        },
     )
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard_page(request: Request):
-    batches = list_batches()
+    account_id = current_account_id(request)
+    user = current_user(request)
+    batches = list_batches(account_id=account_id)
     return templates.TemplateResponse(
         "desktop/dashboard.html",
-        {"request": request, "batches": batches, "flags": _feature_flags()},
+        {
+            "request": request,
+            "batches": batches,
+            "flags": _feature_flags(),
+            "user": user,
+        },
     )
 
 
 @app.get("/print", response_class=HTMLResponse)
 async def print_page(request: Request):
+    user = current_user(request)
     return templates.TemplateResponse(
         "desktop/print.html",
-        {"request": request},
+        {"request": request, "user": user},
     )
 
 
@@ -221,8 +296,10 @@ async def print_page(request: Request):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.post("/api/batch/start")
-async def api_batch_start(body: Optional[StartBatchRequest] = None):
+async def api_batch_start(request: Request, body: Optional[StartBatchRequest] = None):
     """Create a new open batch. Auto-names by date/time. Optional notes + category."""
+    account_id = current_account_id(request)
+    user = current_user(request)
     notes = body.notes if body else ""
     category = (body.category if body else None) or None
     if category and ENABLE_GENERALIST_MODE:
@@ -233,9 +310,12 @@ async def api_batch_start(body: Optional[StartBatchRequest] = None):
         category = None  # ignore category when generalist mode is off
 
     name = f"Batch {datetime.now().strftime('%b %d %Y %I:%M %p')}"
-    batch_id = create_batch(name, notes, category=category)
+    batch_id = create_batch(
+        name, notes, category=category,
+        account_id=account_id, created_by_user_id=user["id"],
+    )
     logger.info(
-        f"[batch] Started batch #{batch_id}: {name!r}"
+        f"[batch] Started batch #{batch_id}: {name!r} (account {account_id}, user {user['id']})"
         + (f" notes={notes!r}" if notes else "")
         + (f" category={category!r}" if category else "")
     )
@@ -243,59 +323,65 @@ async def api_batch_start(body: Optional[StartBatchRequest] = None):
 
 
 @app.post("/api/batch/{batch_id}/archive")
-async def api_batch_archive(batch_id: int):
+async def api_batch_archive(request: Request, batch_id: int):
     """Archive a batch and set all its cards to archived status."""
-    batch = get_batch(batch_id)
+    account_id = current_account_id(request)
+    batch = get_batch(batch_id, account_id=account_id)
     if not batch:
         raise HTTPException(404, "Batch not found")
-    archive_batch(batch_id)
-    logger.info(f"[batch] Archived batch #{batch_id}")
+    archive_batch(batch_id, account_id=account_id)
+    logger.info(f"[batch] Archived batch #{batch_id} (account {account_id})")
     return {"ok": True}
 
 
 @app.post("/api/batch/{batch_id}/unarchive")
-async def api_batch_unarchive(batch_id: int):
+async def api_batch_unarchive(request: Request, batch_id: int):
     """Restore an archived batch — sets cards back to printed status."""
-    batch = get_batch(batch_id)
+    account_id = current_account_id(request)
+    batch = get_batch(batch_id, account_id=account_id)
     if not batch:
         raise HTTPException(404, "Batch not found")
-    unarchive_batch(batch_id)
-    logger.info(f"[batch] Unarchived batch #{batch_id}")
+    unarchive_batch(batch_id, account_id=account_id)
+    logger.info(f"[batch] Unarchived batch #{batch_id} (account {account_id})")
     return {"ok": True}
 
 
 @app.post("/api/batch/{batch_id}/delete")
-async def api_batch_delete(batch_id: int):
+async def api_batch_delete(request: Request, batch_id: int):
     """Hard-delete a batch and all its cards. Sandpiper entries become orphans."""
-    batch = get_batch(batch_id)
+    account_id = current_account_id(request)
+    batch = get_batch(batch_id, account_id=account_id)
     if not batch:
         raise HTTPException(404, "Batch not found")
-    delete_batch(batch_id)
-    logger.info(f"[batch] Deleted batch #{batch_id}")
+    delete_batch(batch_id, account_id=account_id)
+    logger.info(f"[batch] Deleted batch #{batch_id} (account {account_id})")
     return {"ok": True}
 
 
 @app.post("/api/batch/{batch_id}/close")
-async def api_batch_close(batch_id: int):
-    batch = get_batch(batch_id)
+async def api_batch_close(request: Request, batch_id: int):
+    account_id = current_account_id(request)
+    batch = get_batch(batch_id, account_id=account_id)
     if not batch:
         raise HTTPException(404, "Batch not found")
     close_batch(batch_id)
-    logger.info(f"[batch] Closed batch #{batch_id}")
+    logger.info(f"[batch] Closed batch #{batch_id} (account {account_id})")
     return {"ok": True}
 
 
 @app.get("/api/batches")
-async def api_list_batches(include_archived: bool = False):
-    return list_batches(include_archived=include_archived)
+async def api_list_batches(request: Request, include_archived: bool = False):
+    account_id = current_account_id(request)
+    return list_batches(include_archived=include_archived, account_id=account_id)
 
 
 @app.get("/api/batch/{batch_id}")
-async def api_get_batch(batch_id: int):
-    batch = get_batch(batch_id)
+async def api_get_batch(request: Request, batch_id: int):
+    account_id = current_account_id(request)
+    batch = get_batch(batch_id, account_id=account_id)
     if not batch:
         raise HTTPException(404, "Batch not found")
-    cards = list_cards(batch_id=batch_id)
+    cards = list_cards(batch_id=batch_id, account_id=account_id)
     return {"batch": batch, "cards": cards}
 
 
@@ -305,6 +391,7 @@ async def api_get_batch(batch_id: int):
 
 @app.post("/api/ingest")
 async def api_ingest(
+    request: Request,
     files: list[UploadFile] = File(...),
     category: Optional[str] = Form(None),
     makers_mark: Optional[UploadFile] = File(None),
@@ -319,7 +406,8 @@ async def api_ingest(
       makers_mark — extra photo of a maker's mark / signature (non-card items)
       upc_image   — photo of a UPC barcode; AI extracts the digits for precise eBay lookup
     """
-    open_batch = get_open_batch()
+    account_id = current_account_id(request)
+    open_batch = get_open_batch(account_id=account_id)
     if not open_batch:
         raise HTTPException(
             400,
@@ -391,7 +479,7 @@ async def api_ingest(
     # Save to database
     card_id = insert_card(batch_id, result)
 
-    card = get_card(card_id)
+    card = get_card(card_id, account_id=account_id)
     logger.info(
         f"[ingest] Card #{card_id} saved — "
         f"{result.get('display_title') or result.get('title')!r} → ${result.get('price')}"
@@ -417,33 +505,40 @@ async def api_ingest(
 
 @app.get("/api/cards")
 async def api_list_cards(
+    request: Request,
     batch_id: Optional[int] = None,
     status: Optional[str] = None,
     exclude_archived: bool = False,
 ):
-    return list_cards(batch_id=batch_id, status=status, exclude_archived=exclude_archived)
+    account_id = current_account_id(request)
+    return list_cards(
+        batch_id=batch_id, status=status,
+        exclude_archived=exclude_archived, account_id=account_id,
+    )
 
 
 @app.get("/api/cards/{card_id}")
-async def api_get_card(card_id: int):
-    card = get_card(card_id)
+async def api_get_card(request: Request, card_id: int):
+    account_id = current_account_id(request)
+    card = get_card(card_id, account_id=account_id)
     if not card:
         raise HTTPException(404, "Card not found")
     return card
 
 
 @app.patch("/api/cards/{card_id}")
-async def api_update_card(card_id: int, body: UpdateCardRequest):
+async def api_update_card(request: Request, card_id: int, body: UpdateCardRequest):
     """Inline edit — update any card fields from the desktop grid.
 
     If final_price changes on an already-uploaded card, push the new price
     to Sandpiper so the POS stays in sync with the dashboard.
     """
-    before = get_card(card_id)
+    account_id = current_account_id(request)
+    before = get_card(card_id, account_id=account_id)
     if not before:
         raise HTTPException(404, "Card not found")
 
-    update_card(card_id, body.fields)
+    update_card(card_id, body.fields, account_id=account_id)
 
     new_price = body.fields.get("final_price")
     old_price = before.get("final_price")
@@ -457,7 +552,7 @@ async def api_update_card(card_id: int, body: UpdateCardRequest):
 
     if price_changed and was_uploaded and inv_num:
         try:
-            ok = await sandpiper_update_price(inv_num, float(new_price))
+            ok = await sandpiper_update_price(inv_num, float(new_price), account_id)
             if not ok:
                 logger.warning(f"[patch] Sandpiper price-sync failed for card #{card_id}")
         except Exception as e:
@@ -467,39 +562,42 @@ async def api_update_card(card_id: int, body: UpdateCardRequest):
 
 
 @app.post("/api/cards/{card_id}/duplicate")
-async def api_duplicate_card(card_id: int):
+async def api_duplicate_card(request: Request, card_id: int):
     """
     Copy a card (same data, new inv#, seq#, pending status, no barcode).
     Used on mobile when you have 2+ identical cards in a stack.
     """
-    new_id = duplicate_card(card_id)
+    account_id = current_account_id(request)
+    new_id = duplicate_card(card_id, account_id=account_id)
     if not new_id:
         raise HTTPException(404, "Card not found")
-    card = get_card(new_id)
+    card = get_card(new_id, account_id=account_id)
     logger.info(f"[duplicate] Card #{card_id} → new card #{new_id} (inv #{card['inventory_number']})")
     return {"ok": True, "card_id": new_id, "inventory_number": card["inventory_number"],
             "sequence_num": card["sequence_num"]}
 
 
 @app.post("/api/cards/approve")
-async def api_approve_cards(body: ApproveRequest):
+async def api_approve_cards(request: Request, body: ApproveRequest):
     """Bulk approve selected cards (pending → approved)."""
-    approve_cards(body.ids)
-    logger.info(f"[approve] Approved {len(body.ids)} cards")
+    account_id = current_account_id(request)
+    approve_cards(body.ids, account_id=account_id)
+    logger.info(f"[approve] Approved {len(body.ids)} cards (account {account_id})")
     return {"ok": True, "approved": len(body.ids)}
 
 
 @app.post("/api/cards/delete")
-async def api_delete_cards(body: DeleteCardsRequest):
+async def api_delete_cards(request: Request, body: DeleteCardsRequest):
     """
     Hard-delete cards by id. Works regardless of status.
     If the card was already uploaded to Sandpiper, it becomes an orphan there
     — that's intentional, the user will handle it manually.
     """
+    account_id = current_account_id(request)
     if not body.ids:
         raise HTTPException(400, "No card ids provided")
-    delete_cards(body.ids)
-    logger.info(f"[delete] Deleted {len(body.ids)} cards: {body.ids}")
+    delete_cards(body.ids, account_id=account_id)
+    logger.info(f"[delete] Deleted {len(body.ids)} cards (account {account_id}): {body.ids}")
     return {"ok": True, "deleted": len(body.ids)}
 
 
@@ -510,12 +608,13 @@ async def api_delete_cards(body: DeleteCardsRequest):
 SANDPIPER_DELAY = 1.5   # seconds between API calls — be kind to their server
 
 
-async def _upload_cards_to_sandpiper(cards: list[dict]) -> dict:
+async def _upload_cards_to_sandpiper(cards: list[dict], account_id: int) -> dict:
     """
     Core upload logic — shared by both the ID-based and batch-based endpoints.
     - 1.5s pause between each card
     - Skips cards that already have a barcode
     - On error: logs it, marks the card, moves on (no retry loops)
+    Uses the supplied account_id to load the right Sandpiper credentials.
     """
     uploaded = 0
     errors = 0
@@ -534,7 +633,7 @@ async def _upload_cards_to_sandpiper(cards: list[dict]) -> dict:
         logger.info(f"[upload] Card #{card_id} ({i+1}/{len(cards)}): {title!r} @ ${price}")
 
         try:
-            barcode = await create_item_and_barcode(inv_num, title, price)
+            barcode = await create_item_and_barcode(inv_num, title, price, account_id)
             if barcode and barcode != "#":
                 mark_uploaded(card_id, inv_num, barcode)
                 try:
@@ -559,37 +658,39 @@ async def _upload_cards_to_sandpiper(cards: list[dict]) -> dict:
 
 
 @app.post("/api/cards/upload")
-async def api_upload_cards(body: UploadCardsRequest):
+async def api_upload_cards(request: Request, body: UploadCardsRequest):
     """
     Upload specific selected cards to Sandpiper (by ID).
     Replaces the old approve→upload two-step — cards go directly from pending to uploaded.
     """
+    account_id = current_account_id(request)
     if not body.ids:
         raise HTTPException(400, "No card ids provided")
-    cards = [c for cid in body.ids if (c := get_card(cid))]
+    cards = [c for cid in body.ids if (c := get_card(cid, account_id=account_id))]
     if not cards:
         raise HTTPException(404, "None of the specified cards exist")
-    logger.info(f"[upload] Uploading {len(cards)} selected cards to Sandpiper")
-    result = await _upload_cards_to_sandpiper(cards)
+    logger.info(f"[upload] Uploading {len(cards)} selected cards to Sandpiper (account {account_id})")
+    result = await _upload_cards_to_sandpiper(cards, account_id)
     logger.info(f"[upload] Done — {result['uploaded']} uploaded, {result['errors']} errors")
     return result
 
 
 @app.post("/api/batch/{batch_id}/upload")
-async def api_batch_upload(batch_id: int):
+async def api_batch_upload(request: Request, batch_id: int):
     """
     Upload all pending cards in a batch to Sandpiper (batch-level convenience endpoint).
     """
-    batch = get_batch(batch_id)
+    account_id = current_account_id(request)
+    batch = get_batch(batch_id, account_id=account_id)
     if not batch:
         raise HTTPException(404, "Batch not found")
 
-    cards = list_cards(batch_id=batch_id, status="pending")
+    cards = list_cards(batch_id=batch_id, status="pending", account_id=account_id)
     if not cards:
         return {"ok": True, "message": "No pending cards to upload", "uploaded": 0, "errors": 0}
 
-    logger.info(f"[upload] Starting Sandpiper upload for batch #{batch_id} — {len(cards)} cards")
-    result = await _upload_cards_to_sandpiper(cards)
+    logger.info(f"[upload] Starting Sandpiper upload for batch #{batch_id} — {len(cards)} cards (account {account_id})")
+    result = await _upload_cards_to_sandpiper(cards, account_id)
     logger.info(f"[upload] Batch #{batch_id} complete — {result['uploaded']} uploaded, {result['errors']} errors")
     return result
 
@@ -653,19 +754,20 @@ def _write_label_input(cards: list[dict], format_key: str, input_file: Path) -> 
 
 
 @app.post("/api/labels/generate")
-async def api_generate_labels(body: GenerateLabelsRequest):
+async def api_generate_labels(request: Request, body: GenerateLabelsRequest):
     """
     Generate a label PDF for selected card ids (in the order provided).
     Script + format picked per the first card's category (all cards in one call
     should share a format — mixed calls fall back to the first card's choice).
     """
+    account_id = current_account_id(request)
     if not body.ids:
         raise HTTPException(400, "No card ids provided")
 
-    # Fetch cards in the requested order
+    # Fetch cards in the requested order, scoped to this account
     cards = []
     for cid in body.ids:
-        card = get_card(cid)
+        card = get_card(cid, account_id=account_id)
         if card and card.get("barcode"):
             cards.append(card)
         else:
