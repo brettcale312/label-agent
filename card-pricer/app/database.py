@@ -178,6 +178,7 @@ def init_db():
             "ALTER TABLE cards   ADD COLUMN IF NOT EXISTS makers_mark_image_path TEXT",
             "ALTER TABLE cards   ADD COLUMN IF NOT EXISTS price_user_confirmed INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE cards   ADD COLUMN IF NOT EXISTS upc TEXT",
+            "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS label_format TEXT NOT NULL DEFAULT 'auto'",
         ]
         for stmt in _migrations:
             conn.execute(stmt)
@@ -698,7 +699,7 @@ def update_account(account_id: int, fields: dict):
     """Update account fields. Sandpiper password should be pre-encrypted by caller."""
     allowed = {
         "name", "sandpiper_username", "sandpiper_password",
-        "sandpiper_account_id", "sandpiper_booth",
+        "sandpiper_account_id", "sandpiper_booth", "label_format",
     }
     clean = {k: v for k, v in fields.items() if k in allowed}
     if not clean:

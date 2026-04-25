@@ -170,6 +170,25 @@
       </form>
     </section>
 
+    <!-- ── Label Format ──────────────────────────────────────── -->
+    <section>
+      <h2>Label format</h2>
+      <p class="desc">Choose the label size printed for this account's items.</p>
+      <form id="label-format-form">
+        <label for="label-format">Label size</label>
+        <select id="label-format" name="label_format" style="background:var(--panel);color:var(--text);border:1px solid var(--border);padding:8px 10px;border-radius:6px;font-size:14px;width:100%;box-sizing:border-box;">
+          <option value="auto"        {% if (account.label_format or 'auto') == 'auto' %}selected{% endif %}>Auto (cards → 2×2, everything else → 4×3)</option>
+          <option value="card_2x2"    {% if account.label_format == 'card_2x2' %}selected{% endif %}>2×2 — Trading card label</option>
+          <option value="antique_4x3" {% if account.label_format == 'antique_4x3' %}selected{% endif %}>4×3 — Antique / comic label</option>
+          <option value="antique_2x1" {% if account.label_format == 'antique_2x1' %}selected{% endif %}>2×1 — Compact antique label</option>
+        </select>
+        <div class="toolbar">
+          <button type="submit">Save</button>
+          <div id="label-format-toast" class="toast"></div>
+        </div>
+      </form>
+    </section>
+
     <!-- ── Sandpiper ──────────────────────────────────────────── -->
     <section>
       <h2>Sandpiper credentials</h2>
@@ -302,6 +321,13 @@
       const name = document.getElementById('account-name').value;
       const r = await postJson('/api/settings/account', {name});
       showToast('account-toast', r.ok ? 'Saved' : (r.data.detail || 'Error'), r.ok);
+    });
+
+    document.getElementById('label-format-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const label_format = document.getElementById('label-format').value;
+      const r = await postJson('/api/settings/account', {label_format});
+      showToast('label-format-toast', r.ok ? 'Saved' : (r.data.detail || 'Error'), r.ok);
     });
 
     document.getElementById('sandpiper-form').addEventListener('submit', async (e) => {

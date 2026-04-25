@@ -111,6 +111,10 @@ LABEL_SCRIPT_4X3 = Path(os.getenv(
     "LABEL_SCRIPT_4X3_PATH",
     str(BASE_DIR / "label_print" / "make_comic_4x3_labels.py")
 ))
+LABEL_SCRIPT_2X1 = Path(os.getenv(
+    "LABEL_SCRIPT_2X1_PATH",
+    str(BASE_DIR / "label_print" / "make_antique_2x1_labels.py")
+))
 
 for d in (UPLOADS_DIR, LABELS_DIR):
     d.mkdir(parents=True, exist_ok=True)
@@ -954,21 +958,24 @@ async def api_batch_upload(request: Request, batch_id: int):
 # Label generation
 # ─────────────────────────────────────────────────────────────────────────────
 
-def pick_label_script(card: dict) -> tuple[Path, str]:
+def pick_label_script(card: dict, account: dict = None) -> tuple[Path, str]:
     """
     Choose the label script + format for a given card.
-    Returns (script_path, format_key) where format_key ∈ {"card_2x2", "antique_4x3"}.
+    Returns (script_path, format_key) where format_key ∈ {"card_2x2", "antique_4x3", "antique_2x1"}.
 
-    LABEL_FORMAT env values:
+    Priority: account.label_format > LABEL_FORMAT env var > auto
       auto         — card category → 2x2, everything else → 4x3
-      card_2x2     — force 2x2 regardless of category
-      antique_4x3  — force 4x3 regardless of category
+      card_2x2     — 2"×2" trading card label
+      antique_4x3  — 4"×3" antique/comic label
+      antique_2x1  — 2"×1" compact antique label
     """
-    fmt = (LABEL_FORMAT or "auto").lower()
+    fmt = ((account or {}).get("label_format") or LABEL_FORMAT or "auto").lower()
     if fmt == "card_2x2":
         return LABEL_SCRIPT, "card_2x2"
     if fmt == "antique_4x3":
         return LABEL_SCRIPT_4X3, "antique_4x3"
+    if fmt == "antique_2x1":
+        return LABEL_SCRIPT_2X1, "antique_2x1"
     # auto
     category = (card.get("category") or "card").lower()
     if ENABLE_GENERALIST_MODE and category != "card":
@@ -990,6 +997,14 @@ def _write_label_input(cards: list[dict], format_key: str, input_file: Path) -> 
                     card.get("bullet_2") or "",
                     card.get("bullet_3") or "",
                     publisher,
+                    f"${price:.2f}",
+                    card.get("inventory_number") or "",
+                    card.get("barcode") or "",
+                ])
+            elif format_key == "antique_2x1":
+                # 4 cols: Title, Price, InventoryID, Barcode
+                row = "\t".join([
+                    card.get("display_title") or card.get("card_name") or "",
                     f"${price:.2f}",
                     card.get("inventory_number") or "",
                     card.get("barcode") or "",
@@ -1031,7 +1046,8 @@ async def api_generate_labels(request: Request, body: GenerateLabelsRequest):
     if not cards:
         raise HTTPException(400, "None of the selected cards have barcodes yet")
 
-    script_path, format_key = pick_label_script(cards[0])
+    account = get_account(account_id)
+    script_path, format_key = pick_label_script(cards[0], account=account)
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     input_file = LABELS_DIR / f"label_input_{ts}.txt"
