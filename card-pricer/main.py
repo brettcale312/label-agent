@@ -115,6 +115,10 @@ LABEL_SCRIPT_2X1 = Path(os.getenv(
     "LABEL_SCRIPT_2X1_PATH",
     str(BASE_DIR / "label_print" / "make_antique_2x1_labels.py")
 ))
+LABEL_SCRIPT_1X1 = Path(os.getenv(
+    "LABEL_SCRIPT_1X1_PATH",
+    str(BASE_DIR / "label_print" / "make_antique_1x1_labels.py")
+))
 
 for d in (UPLOADS_DIR, LABELS_DIR):
     d.mkdir(parents=True, exist_ok=True)
@@ -410,6 +414,7 @@ class UpdateAccountRequest(BaseModel):
     sandpiper_password: Optional[str] = None  # plaintext from the form; encrypted before storage
     sandpiper_account_id: Optional[str] = None
     sandpiper_booth: Optional[str] = None
+    label_format: Optional[str] = None
 
 
 class CreateInviteRequest(BaseModel):
@@ -462,6 +467,9 @@ async def api_settings_update_account(request: Request, body: UpdateAccountReque
     if body.sandpiper_password:
         # Only update password when a new one is provided. Empty string ⇒ keep current.
         fields["sandpiper_password"] = crypto.encrypt(body.sandpiper_password)
+    if body.label_format is not None:
+        valid_formats = {"auto", "card_2x2", "antique_4x3", "antique_2x1", "antique_1x1"}
+        fields["label_format"] = body.label_format if body.label_format in valid_formats else "auto"
 
     if not fields:
         return {"ok": True, "updated": 0}
@@ -976,6 +984,8 @@ def pick_label_script(card: dict, account: dict = None) -> tuple[Path, str]:
         return LABEL_SCRIPT_4X3, "antique_4x3"
     if fmt == "antique_2x1":
         return LABEL_SCRIPT_2X1, "antique_2x1"
+    if fmt == "antique_1x1":
+        return LABEL_SCRIPT_1X1, "antique_1x1"
     # auto
     category = (card.get("category") or "card").lower()
     if ENABLE_GENERALIST_MODE and category != "card":
@@ -1001,7 +1011,7 @@ def _write_label_input(cards: list[dict], format_key: str, input_file: Path) -> 
                     card.get("inventory_number") or "",
                     card.get("barcode") or "",
                 ])
-            elif format_key == "antique_2x1":
+            elif format_key in ("antique_2x1", "antique_1x1"):
                 # 4 cols: Title, Price, InventoryID, Barcode
                 row = "\t".join([
                     card.get("display_title") or card.get("card_name") or "",
