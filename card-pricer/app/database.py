@@ -524,10 +524,11 @@ def approve_cards(card_ids: list[int], account_id: Optional[int] = None):
                 params,
             )
         else:
-            conn.executemany(
-                "UPDATE cards SET status='approved' WHERE id=%s AND status='pending'",
-                [(cid,) for cid in card_ids],
-            )
+            with conn.cursor() as cur:
+                cur.executemany(
+                    "UPDATE cards SET status='approved' WHERE id=%s AND status='pending'",
+                    [(cid,) for cid in card_ids],
+                )
 
 
 def get_approved_cards(batch_id: int, account_id: Optional[int] = None) -> list[dict]:
@@ -560,8 +561,8 @@ def mark_sandpiper_error(card_id: int, error: str):
 
 
 def mark_printed(card_ids: list[int]):
-    with get_conn() as conn:
-        conn.executemany(
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.executemany(
             "UPDATE cards SET status='printed', printed_at=%s WHERE id=%s",
             [(_now(), cid) for cid in card_ids],
         )
