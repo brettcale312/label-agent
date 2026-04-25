@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Sign in — Card Pricer</title>
+  <title>Sign in — {{ APP_NAME }}</title>
   <style>
     :root {
       --bg: #0f1115;
@@ -100,7 +100,7 @@
 </head>
 <body>
   <form class="card" method="post" action="/login">
-    <h1>Card Pricer</h1>
+    <h1>{{ APP_NAME }}</h1>
     <p class="subtitle">Sign in to continue</p>
 
     {% if error %}

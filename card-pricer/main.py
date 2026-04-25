@@ -135,6 +135,7 @@ app.add_middleware(
 )
 
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+templates.env.globals["APP_NAME"] = os.getenv("APP_NAME", "Card Pricer")
 
 # Serve generated labels and uploaded card images as static files
 app.mount("/labels",  StaticFiles(directory=str(LABELS_DIR)),  name="labels")

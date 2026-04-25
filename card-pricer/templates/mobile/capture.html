@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-  <meta name="apple-mobile-web-app-title" content="Card Pricer" />
-  <title>Card Pricer</title>
+  <meta name="apple-mobile-web-app-title" content="{{ APP_NAME }}" />
+  <title>{{ APP_NAME }}</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -205,7 +205,7 @@
 <body>
 
   <div class="header" style="position:relative;">
-    <h1>Card Pricer</h1>
+    <h1>{{ APP_NAME }}</h1>
     <div class="sub">Scan &amp; Price Items</div>
     {% if user %}
     <div style="position:absolute;top:0.6em;right:0.8em;font-size:0.72em;color:rgba(255,255,255,0.85);text-align:right;line-height:1.3;">
