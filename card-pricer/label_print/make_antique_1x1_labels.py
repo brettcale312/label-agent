@@ -115,7 +115,7 @@ def draw_label(c, title: str, price: str, inv_id: str, barcode_val: str, booth: 
         barWidth=0.009 * inch,
         humanReadable=False,
     )
-    bc_x = max(MARGIN, (PAGE_W - bc.width) / 2)
+    bc_x = (PAGE_W - bc.width) / 2
     bc.drawOn(c, bc_x, bc_bottom)
 
 
