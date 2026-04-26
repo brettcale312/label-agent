@@ -592,6 +592,7 @@ def duplicate_card(card_id: int, account_id: Optional[int] = None) -> Optional[i
                 image_path, search_query, ai_notes,
                 category, era, maker, material, dimensions,
                 makers_mark_image_path, price_user_confirmed,
+                cost,
                 created_at
             ) VALUES (
                 %s, %s, 'pending',
@@ -602,6 +603,7 @@ def duplicate_card(card_id: int, account_id: Optional[int] = None) -> Optional[i
                 %s, %s, %s,
                 %s, %s, %s, %s, %s,
                 %s, %s,
+                %s,
                 %s
             ) RETURNING id
         """, (
@@ -616,6 +618,7 @@ def duplicate_card(card_id: int, account_id: Optional[int] = None) -> Optional[i
             card.get("category"), card.get("era"), card.get("maker"),
             card.get("material"), card.get("dimensions"),
             card.get("makers_mark_image_path"), card.get("price_user_confirmed") or 0,
+            card.get("cost"),
             _now(),
         )).fetchone()
         return row["id"]

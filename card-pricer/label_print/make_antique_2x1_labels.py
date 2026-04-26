@@ -18,7 +18,7 @@ from reportlab.graphics.barcode import code128
 PAGE_W    = 2 * inch
 PAGE_H    = 1 * inch
 MARGIN    = 0.08 * inch
-BARCODE_H = 0.22 * inch
+BARCODE_H = 0.28 * inch
 
 
 def normalize(s: str) -> str:
@@ -104,7 +104,7 @@ def draw_label(
         bc = code128.Code128(
             barcode_val,
             barHeight=BARCODE_H,
-            barWidth=0.013 * inch,
+            barWidth=0.016 * inch,
             humanReadable=False,
         )
         bc_x = (PAGE_W - bc.width) / 2

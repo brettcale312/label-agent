@@ -557,6 +557,14 @@
     return `<span style="color:#aaa;font-size:0.85em;">Set price</span>`;
   }
 
+  function costFormatter(cell) {
+    const v = cell.getValue();
+    if (v != null && v > 0) {
+      return `<strong style="color:#1a73e8">$${parseFloat(v).toFixed(2)}</strong>`;
+    }
+    return '';   // no cost set — show blank, not "AI Est."
+  }
+
   function tip(e, cell) {
     // Native browser tooltip — Tabulator 6 passes (event, cell, onRendered)
     return String(cell.getValue() || '');
@@ -593,7 +601,7 @@
         { title: 'Bullet 1', field: 'bullet_1', minWidth: 160, tooltip: tip },
         { title: 'Bullet 2', field: 'bullet_2', minWidth: 160, tooltip: tip },
         { title: 'Price', field: 'final_price', width: 80, formatter: priceFormatter },
-        ...(FLAGS.cost_field ? [{ title: 'Cost', field: 'cost', width: 75, formatter: priceFormatter }] : []),
+        ...(FLAGS.cost_field ? [{ title: 'Cost', field: 'cost', width: 75, formatter: costFormatter }] : []),
         { title: 'Inv #', field: 'inventory_number', width: 80 },
         { title: 'Barcode', field: 'barcode', width: 100 },
         { title: 'AI Notes', field: 'ai_notes', width: 180, tooltip: tip },
