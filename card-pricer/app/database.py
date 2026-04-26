@@ -179,6 +179,7 @@ def init_db():
             "ALTER TABLE cards   ADD COLUMN IF NOT EXISTS price_user_confirmed INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE cards   ADD COLUMN IF NOT EXISTS upc TEXT",
             "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS label_format TEXT NOT NULL DEFAULT 'auto'",
+            "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS enable_cost_field BOOLEAN NOT NULL DEFAULT false",
             "ALTER TABLE cards   ADD COLUMN IF NOT EXISTS cost DOUBLE PRECISION",
         ]
         for stmt in _migrations:
@@ -702,6 +703,7 @@ def update_account(account_id: int, fields: dict):
     allowed = {
         "name", "sandpiper_username", "sandpiper_password",
         "sandpiper_account_id", "sandpiper_booth", "label_format",
+        "enable_cost_field",
     }
     clean = {k: v for k, v in fields.items() if k in allowed}
     if not clean:

@@ -250,8 +250,11 @@ async def index(request: Request):
     return HTMLResponse(status_code=302, headers={"Location": "/dashboard"})
 
 
-def _feature_flags() -> dict:
-    """Flag bundle for templates — keeps UI toggles in one place."""
+def _feature_flags(account: dict = None) -> dict:
+    """Flag bundle for templates. Per-account settings override global env vars."""
+    acct = account or {}
+    # enable_cost_field: per-account boolean takes precedence over global env var
+    cost_field = bool(acct.get("enable_cost_field")) if "enable_cost_field" in acct else ENABLE_COST_FIELD
     return {
         "generalist_mode": ENABLE_GENERALIST_MODE,
         "category_picker": ENABLE_CATEGORY_PICKER,
@@ -260,7 +263,7 @@ def _feature_flags() -> dict:
         "extra_photos": ENABLE_EXTRA_PHOTOS,
         "extra_photo_limit": EXTRA_PHOTO_LIMIT,
         "mobile_edit": ENABLE_MOBILE_EDIT,
-        "cost_field": ENABLE_COST_FIELD,
+        "cost_field": cost_field,
         "range_pricing": ENABLE_RANGE_PRICING,
         "default_category": DEFAULT_CATEGORY,
         "known_categories": KNOWN_CATEGORIES,
@@ -421,6 +424,7 @@ class UpdateAccountRequest(BaseModel):
     sandpiper_account_id: Optional[str] = None
     sandpiper_booth: Optional[str] = None
     label_format: Optional[str] = None
+    enable_cost_field: Optional[bool] = None
 
 
 class CreateInviteRequest(BaseModel):
@@ -476,6 +480,8 @@ async def api_settings_update_account(request: Request, body: UpdateAccountReque
     if body.label_format is not None:
         valid_formats = {"auto", "card_2x2", "antique_4x3", "antique_2x1", "antique_1x1"}
         fields["label_format"] = body.label_format if body.label_format in valid_formats else "auto"
+    if body.enable_cost_field is not None:
+        fields["enable_cost_field"] = body.enable_cost_field
 
     if not fields:
         return {"ok": True, "updated": 0}
@@ -526,13 +532,14 @@ async def api_settings_delete_invite(request: Request, invite_id: int):
 async def capture_page(request: Request):
     account_id = current_account_id(request)
     user = current_user(request)
+    account = get_account(account_id) or {}
     open_batch = get_open_batch(account_id=account_id)
     return templates.TemplateResponse(
         request,
         "mobile/capture.html",
         {
             "open_batch": open_batch,
-            "flags": _feature_flags(),
+            "flags": _feature_flags(account),
             "user": user,
         },
     )
@@ -542,13 +549,14 @@ async def capture_page(request: Request):
 async def dashboard_page(request: Request):
     account_id = current_account_id(request)
     user = current_user(request)
+    account = get_account(account_id) or {}
     batches = list_batches(account_id=account_id)
     return templates.TemplateResponse(
         request,
         "desktop/dashboard.html",
         {
             "batches": batches,
-            "flags": _feature_flags(),
+            "flags": _feature_flags(account),
             "user": user,
         },
     )
@@ -979,7 +987,7 @@ async def api_batch_upload(request: Request, batch_id: int):
 def pick_label_script(card: dict, account: dict = None) -> tuple[Path, str]:
     """
     Choose the label script + format for a given card.
-    Returns (script_path, format_key) where format_key ∈ {"card_2x2", "antique_4x3", "antique_2x1"}.
+    Returns (script_path, format_key) where format_key ∈ {"card_2x2", "antique_4x3", "antique_2x1", "antique_1x1"}.
 
     Priority: account.label_format > LABEL_FORMAT env var > auto
       auto         — card category → 2x2, everything else → 4x3
@@ -1003,8 +1011,14 @@ def pick_label_script(card: dict, account: dict = None) -> tuple[Path, str]:
     return LABEL_SCRIPT, "card_2x2"
 
 
-def _write_label_input(cards: list[dict], format_key: str, input_file: Path) -> None:
+def _write_label_input(
+    cards: list[dict],
+    format_key: str,
+    input_file: Path,
+    account: dict = None,
+) -> None:
     """Write the TSV input file matching the chosen label script's column contract."""
+    booth = (account or {}).get("sandpiper_booth") or ""
     with open(input_file, "w", encoding="utf-8") as f:
         for card in cards:
             price = card.get("final_price") or 0
@@ -1021,7 +1035,16 @@ def _write_label_input(cards: list[dict], format_key: str, input_file: Path) -> 
                     card.get("inventory_number") or "",
                     card.get("barcode") or "",
                 ])
-            elif format_key in ("antique_2x1", "antique_1x1"):
+            elif format_key == "antique_2x1":
+                # 5 cols: Title, Price, InventoryID, Barcode, Booth
+                row = "\t".join([
+                    card.get("display_title") or card.get("card_name") or "",
+                    f"${price:.2f}",
+                    card.get("inventory_number") or "",
+                    card.get("barcode") or "",
+                    booth,
+                ])
+            elif format_key == "antique_1x1":
                 # 4 cols: Title, Price, InventoryID, Barcode
                 row = "\t".join([
                     card.get("display_title") or card.get("card_name") or "",
@@ -1073,7 +1096,7 @@ async def api_generate_labels(request: Request, body: GenerateLabelsRequest):
     input_file = LABELS_DIR / f"label_input_{ts}.txt"
     output_pdf = LABELS_DIR / f"labels_{ts}.pdf"
 
-    _write_label_input(cards, format_key, input_file)
+    _write_label_input(cards, format_key, input_file, account=account)
 
     if not script_path.exists():
         raise HTTPException(

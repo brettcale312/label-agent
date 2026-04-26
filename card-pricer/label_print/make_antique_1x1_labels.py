@@ -21,6 +21,7 @@ from pathlib import Path
 
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import inch
+from reportlab.lib.utils import ImageReader
 
 try:
     import qrcode
@@ -74,7 +75,7 @@ def draw_label(c, title: str, price: str, inv_id: str, barcode_val: str):
     img.save(img_bytes, format="PNG")
     img_bytes.seek(0)
     c.drawImage(
-        img_bytes,                          # type: ignore[arg-type]
+        ImageReader(img_bytes),
         qr_x, qr_y,
         width=qr_size, height=qr_size,
         preserveAspectRatio=True,
