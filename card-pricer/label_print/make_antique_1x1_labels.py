@@ -112,7 +112,7 @@ def draw_label(c, title: str, price: str, inv_id: str, barcode_val: str, booth: 
     bc = code128.Code128(
         barcode_val,
         barHeight=bc_h,
-        barWidth=0.009 * inch,
+        barWidth=0.011 * inch,
         humanReadable=False,
     )
     bc_x = (PAGE_W - bc.width) / 2
