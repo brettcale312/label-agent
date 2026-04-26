@@ -1045,12 +1045,13 @@ def _write_label_input(
                     booth,
                 ])
             elif format_key == "antique_1x1":
-                # 4 cols: Title, Price, InventoryID, Barcode
+                # 5 cols: Title, Price, InventoryID, Barcode, Booth
                 row = "\t".join([
                     card.get("display_title") or card.get("card_name") or "",
                     f"${price:.2f}",
                     card.get("inventory_number") or "",
                     card.get("barcode") or "",
+                    booth,
                 ])
             else:
                 # card_2x2 — 7 cols: title, bullet_1, bullet_2, price_source, price, inv, barcode

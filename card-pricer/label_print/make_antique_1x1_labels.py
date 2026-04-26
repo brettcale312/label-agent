@@ -1,12 +1,14 @@
 # make_antique_1x1_labels.py
 # 1" x 1" label with Code 128 barcode for small antique items / hang tags.
 #
-# The barcode fills most of the label height so it can scan from a phone
-# or handheld scanner at this size.  Price and title appear above; inventory
-# ID appears below the barcode.
+# Layout (top → bottom):
+#   Price    — large, bold, centered
+#   Title    — small, centered, word-wraps to 2 lines
+#   Barcode  — Code 128, fills the remaining height
+#   Footer   — booth number (left)  ·  inventory ID (right)
 #
-# Input TSV columns (4):
-#   Title, Price, InventoryID, BarcodeNumber
+# Input TSV columns (5):
+#   Title, Price, InventoryID, BarcodeNumber, BoothNumber
 #
 # Requires: reportlab   (pip install reportlab)
 #
@@ -26,54 +28,95 @@ PAGE_H = 1 * inch
 MARGIN = 0.05 * inch
 
 
-def draw_label(c, title: str, price: str, inv_id: str, barcode_val: str):
-    title       = (title       or "").strip()
-    price       = (price       or "").strip()
-    inv_id      = (inv_id      or "").strip()
-    barcode_val = (barcode_val or "").strip()
+def normalize(s: str) -> str:
+    return (s or "").replace("–", "-").replace("—", "-").replace(" ", " ")
+
+
+def _wrap_title(c_obj, text: str, font: str, size: float, max_w: float) -> list[str]:
+    """Word-wrap *text* into at most 2 centred lines that each fit max_w."""
+    if not text:
+        return []
+    words = text.split()
+
+    line1_words: list[str] = []
+    remaining_start = 0
+    for i, word in enumerate(words):
+        candidate = " ".join(line1_words + [word])
+        if c_obj.stringWidth(candidate, font, size) <= max_w:
+            line1_words.append(word)
+            remaining_start = i + 1
+        else:
+            break
+
+    if remaining_start >= len(words):
+        return [" ".join(line1_words)]
+
+    line1 = " ".join(line1_words)
+    line2 = " ".join(words[remaining_start:])
+    while line2 and c_obj.stringWidth(line2, font, size) > max_w:
+        if " " in line2:
+            line2 = line2.rsplit(" ", 1)[0]
+        else:
+            line2 = line2[:-1]
+    return [line1, line2.strip()] if line2.strip() else [line1]
+
+
+def draw_label(c, title: str, price: str, inv_id: str, barcode_val: str, booth: str):
+    title       = normalize(title)
+    price       = normalize(price)
+    inv_id      = normalize(inv_id)
+    barcode_val = normalize(barcode_val)
+    booth       = normalize(booth)
 
     if not barcode_val:
         return  # nothing to encode
 
-    # ── Top row: title (left) + price (right, bold) ───────────────────────
-    top_size  = 7
-    top_y     = PAGE_H - MARGIN - top_size      # baseline
+    usable_w = PAGE_W - 2 * MARGIN
+    cx = PAGE_W / 2   # centre x
 
-    price_font = "Helvetica-Bold"
-    c.setFont(price_font, top_size)
-    price_w = c.stringWidth(price, price_font, top_size)
-    c.drawString(PAGE_W - MARGIN - price_w, top_y, price)
+    # ── Price — large, bold, centred at top ───────────────────────────────
+    price_size = 10
+    price_y = PAGE_H - MARGIN - price_size
+    c.setFont("Helvetica-Bold", price_size)
+    c.drawCentredString(cx, price_y, price)
 
-    title_font = "Helvetica"
-    c.setFont(title_font, top_size)
-    title_max_w = PAGE_W - 2 * MARGIN - price_w - 3   # 3pt gap
-    disp_title = title
-    while disp_title and c.stringWidth(disp_title, title_font, top_size) > title_max_w:
-        disp_title = disp_title[:-1]
-    c.drawString(MARGIN, top_y, disp_title)
+    # ── Title — small, centred, up to 2 lines ─────────────────────────────
+    title_font, title_size = "Helvetica", 5
+    c.setFont(title_font, title_size)
+    lines = _wrap_title(c, title, title_font, title_size, usable_w)
 
-    # ── Bottom row: inventory ID ───────────────────────────────────────────
-    bot_size = 5
-    bot_y    = MARGIN                              # baseline
+    title_leading = 1          # pt between wrapped lines
+    title_top_y = price_y - price_size - 2    # first baseline, just below price
+    for i, line in enumerate(lines):
+        y = title_top_y - i * (title_size + title_leading)
+        c.drawCentredString(cx, y, line)
 
-    c.setFont("Helvetica", bot_size)
-    c.drawString(MARGIN, bot_y, f"ID: {inv_id}")
+    # Bottom of the last title line
+    last_title_bottom = title_top_y - (len(lines) - 1) * (title_size + title_leading)
 
-    # ── Barcode (Code128, fills the space between top and bottom rows) ─────
-    # Compute available height dynamically
-    bc_y   = bot_y + bot_size + 2           # 2pt gap above ID text
-    bc_top = top_y - 2                      # 2pt gap below top text
-    bc_h   = max(bc_top - bc_y, 8)         # guard against tiny labels
+    # ── Footer — booth left, inv ID right (bare numbers, no labels) ────────
+    foot_font, foot_size = "Helvetica", 5
+    c.setFont(foot_font, foot_size)
+    foot_y = MARGIN
+    if booth:
+        c.drawString(MARGIN, foot_y, booth)
+    if inv_id:
+        inv_w = c.stringWidth(inv_id, foot_font, foot_size)
+        c.drawString(PAGE_W - MARGIN - inv_w, foot_y, inv_id)
+
+    # ── Barcode — Code 128, fills space between title and footer ───────────
+    bc_bottom = foot_y + foot_size + 2          # 2pt gap above footer
+    bc_top    = last_title_bottom - title_size - 2   # 2pt gap below title
+    bc_h      = max(bc_top - bc_bottom, 8)
 
     bc = code128.Code128(
         barcode_val,
         barHeight=bc_h,
-        barWidth=0.009 * inch,              # narrow bar — fits in 1" width
+        barWidth=0.009 * inch,
         humanReadable=False,
     )
-    # Center horizontally; clamp to margin if wider than label
     bc_x = max(MARGIN, (PAGE_W - bc.width) / 2)
-    bc.drawOn(c, bc_x, bc_y)
+    bc.drawOn(c, bc_x, bc_bottom)
 
 
 def main():
@@ -98,10 +141,10 @@ def main():
         for row in reader:
             if not row or all(not (x or "").strip() for x in row):
                 continue
-            while len(row) < 4:
+            while len(row) < 5:
                 row.append("")
-            title, price, inv_id, barcode_val = [x.strip() for x in row[:4]]
-            draw_label(c, title, price, inv_id, barcode_val)
+            title, price, inv_id, barcode_val, booth = [x.strip() for x in row[:5]]
+            draw_label(c, title, price, inv_id, barcode_val, booth)
             c.showPage()
             count += 1
 
