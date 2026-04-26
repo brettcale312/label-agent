@@ -1,10 +1,10 @@
 # make_antique_1x1_labels.py
-# 1" x 1.5" label with Code 128 barcode for small antique items / hang tags.
+# 1.5" x 1" label with Code 128 barcode for small antique items / hang tags.
 #
 # Layout (top → bottom):
 #   Price    — large, bold, centered
 #   Title    — small, centered, word-wraps to 2 lines
-#   Barcode  — Code 128, fills the remaining height (~0.8")
+#   Barcode  — Code 128, fills the remaining height
 #   Footer   — booth number (left)  ·  inventory ID (right)
 #
 # Input TSV columns (5):
@@ -23,8 +23,8 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.units import inch
 from reportlab.graphics.barcode import code128
 
-PAGE_W = 1   * inch
-PAGE_H = 1.5 * inch
+PAGE_W = 1.5 * inch
+PAGE_H = 1   * inch
 MARGIN = 0.05 * inch
 
 
