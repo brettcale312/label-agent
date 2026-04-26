@@ -109,12 +109,12 @@ def draw_label(c, title: str, price: str, inv_id: str, barcode_val: str, booth: 
     bc_top    = last_title_bottom - title_size - 2   # 2pt gap below title
     bc_h      = max(bc_top - bc_bottom, 8)
 
-    # Scale barWidth so the barcode fills almost the full label width.
-    # Probe at a tiny barWidth to find the module count, then scale up.
-    target_w = PAGE_W - 2 * MARGIN          # ~0.90" usable width
-    _probe_bw = 0.001 * inch
-    _probe = code128.Code128(barcode_val, barHeight=1, barWidth=_probe_bw, humanReadable=False)
-    bar_width = _probe_bw * target_w / _probe.width   # scale to fill target
+    # Scale barWidth so the barcode fills the usable label width.
+    # Code128B: 11 modules per data char + 55 fixed overhead
+    # (10 left quiet + 11 start + 11 check + 13 stop + 10 right quiet)
+    n_modules = 55 + 11 * max(len(barcode_val), 1)
+    target_w  = PAGE_W - 2 * MARGIN          # 0.90" on a 1" label
+    bar_width = target_w / n_modules
 
     bc = code128.Code128(
         barcode_val,
